@@ -3452,6 +3452,8 @@
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
+
+				t-power-on-us = <80>;
 			};
 		};
 
@@ -3696,6 +3698,8 @@
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
+
+				t-power-on-us = <80>;
 			};
 		};
 
@@ -3889,6 +3893,8 @@
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
+
+				t-power-on-us = <80>;
 			};
 		};
 
@@ -4081,6 +4087,8 @@
 				bus-range = <0x01 0xff>;
 
 				phys = <&pcie4_phy>;
+
+				t-power-on-us = <80>;
 
 				#address-cells = <3>;
 				#size-cells = <2>;
