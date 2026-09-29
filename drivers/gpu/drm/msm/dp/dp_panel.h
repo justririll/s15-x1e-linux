@@ -52,6 +52,8 @@ struct msm_dp_panel {
 	bool sdp_needs_flush;
 	enum drm_colorspace colorspace;
 	struct dp_sdp vsc_sdp;
+	bool hdr_enabled;
+	struct dp_sdp hdr_sdp;
 	u32 hw_revision;
 
 	enum msm_dp_stream_id stream_id;
@@ -76,6 +78,7 @@ void msm_dp_panel_clear_dsc_dto(struct msm_dp_panel *msm_dp_panel);
 
 void msm_dp_panel_enable_vsc_sdp(struct msm_dp_panel *msm_dp_panel, struct dp_sdp *vsc_sdp);
 void msm_dp_panel_disable_vsc_sdp(struct msm_dp_panel *msm_dp_panel);
+void msm_dp_panel_disable_hdr_sdp(struct msm_dp_panel *msm_dp_panel);
 
 /**
  * is_link_rate_valid() - validates the link rate

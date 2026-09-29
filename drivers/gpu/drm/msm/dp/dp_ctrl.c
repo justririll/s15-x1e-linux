@@ -2690,7 +2690,9 @@ int msm_dp_ctrl_on_stream(struct msm_dp_ctrl *msm_dp_ctrl, struct msm_dp_panel *
 			clock /= 2;
 		ret = msm_dp_utils_select_bpp(panel->msm_dp_mode.bpp / 3, 10,
 					      clock, ctrl->link->link_params.rate,
-					      ctrl->link->link_params.num_lanes);
+					      ctrl->link->link_params.num_lanes,
+					      panel->hdr_enabled && panel->hdr_sdp.db[2] !=
+					      HDMI_EOTF_TRADITIONAL_GAMMA_SDR);
 		if (ret < 0)
 			return ret;
 		panel->msm_dp_mode.bpp = ret;
@@ -2770,6 +2772,9 @@ void msm_dp_ctrl_off_link(struct msm_dp_ctrl *msm_dp_ctrl,
 
 	ctrl = container_of(msm_dp_ctrl, struct msm_dp_ctrl_private, msm_dp_ctrl);
 	phy = ctrl->phy;
+
+	msm_dp_panel_disable_vsc_sdp(panel);
+	msm_dp_panel_disable_hdr_sdp(panel);
 
 	msm_dp_ctrl_mainlink_disable(ctrl);
 
