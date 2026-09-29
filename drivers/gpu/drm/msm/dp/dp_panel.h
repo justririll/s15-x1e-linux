@@ -48,6 +48,10 @@ struct msm_dp_panel {
 	bool video_test;
 	bool vsc_sdp_supported;
 	bool link_caps_valid;
+	bool vsc_enabled;
+	bool sdp_needs_flush;
+	enum drm_colorspace colorspace;
+	struct dp_sdp vsc_sdp;
 	u32 hw_revision;
 
 	enum msm_dp_stream_id stream_id;
