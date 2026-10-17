@@ -4063,6 +4063,11 @@
 			#hwlock-cells = <1>;
 		};
 
+		tcsr_halt: syscon@1f60000 {
+			compatible = "qcom,x1e80100-tcsr-halt", "syscon";
+			reg = <0 0x01f60000 0 0x20000>;
+		};
+
 		tcsr: clock-controller@1fc0000 {
 			compatible = "qcom,x1e80100-tcsr", "syscon";
 			reg = <0 0x01fc0000 0 0x30000>;
@@ -6518,6 +6523,20 @@
 			#interrupt-cells = <2>;
 			interrupt-parent = <&intc>;
 			interrupt-controller;
+		};
+
+		pdc_reset: reset-controller@b5e0000 {
+			compatible = "qcom,x1e80100-pdc-global";
+			reg = <0 0x0b5e0000 0 0x10000>;
+			#reset-cells = <1>;
+			status = "reserved"; /* Owned by the hypervisor */
+		};
+
+		aoss_reset: reset-controller@c2f0000 {
+			compatible = "qcom,x1e80100-aoss-cc";
+			reg = <0 0x0c2f0000 0 0x10000>;
+			#reset-cells = <1>;
+			status = "reserved"; /* Owned by the hypervisor */
 		};
 
 		aoss_qmp: power-management@c300000 {
