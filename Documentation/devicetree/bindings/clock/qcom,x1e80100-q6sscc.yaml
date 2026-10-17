@@ -27,7 +27,7 @@ properties:
 
   clocks:
     items:
-      - description: XO reference clock
+      - description: XO reference clock (19.2 MHz)
 
   '#clock-cells':
     const: 1
@@ -47,6 +47,6 @@ examples:
     clock-controller@32340000 {
         compatible = "qcom,x1e80100-cdsp-q6sscc";
         reg = <0x32340000 0x10000>;
-        clocks = <&rpmhcc RPMH_CXO_CLK>;
+        clocks = <&bi_tcxo_ao_div2>;
         #clock-cells = <1>;
     };
