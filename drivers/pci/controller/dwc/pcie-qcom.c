@@ -1803,8 +1803,14 @@ static void qcom_pcie_icc_opp_update(struct qcom_pcie *pcie)
 	width = FIELD_GET(PCI_EXP_LNKSTA_NLW, status);
 
 	if (pcie->icc_mem) {
-		ret = icc_set_bw(pcie->icc_mem, 0,
-				 width * QCOM_PCIE_LINK_SPEED_TO_BW(speed));
+		/*
+		 * Don't vote the full link bandwidth: as peak or as average it
+		 * pins DDR at 2092 MHz for as long as the link is up, even when
+		 * it idles in L1ss (AOP DDR stats, 2026-10-01). Keep the boot-time
+		 * Gen1 x1 vote; real DMA traffic is seen by the LLCC->DDR BWMON,
+		 * which scales DDR up.
+		 */
+		ret = icc_set_bw(pcie->icc_mem, 0, QCOM_PCIE_LINK_SPEED_TO_BW(1));
 		if (ret) {
 			dev_err(pci->dev, "Failed to set bandwidth for PCIe-MEM interconnect path: %d\n",
 				ret);
