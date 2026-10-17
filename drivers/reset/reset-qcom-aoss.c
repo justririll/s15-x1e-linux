@@ -41,6 +41,17 @@ static const struct qcom_aoss_desc sdm845_aoss_desc = {
 	.num_resets = ARRAY_SIZE(sdm845_aoss_resets),
 };
 
+/* Only the DSP restarts are known on X1E80100 */
+static const struct qcom_aoss_reset_map x1e80100_aoss_resets[] = {
+	[AOSS_CC_LPASS_RESTART] = {0x7014},
+	[AOSS_CC_TURING_RESTART] = {0x7020},
+};
+
+static const struct qcom_aoss_desc x1e80100_aoss_desc = {
+	.resets = x1e80100_aoss_resets,
+	.num_resets = ARRAY_SIZE(x1e80100_aoss_resets),
+};
+
 static inline struct qcom_aoss_reset_data *to_qcom_aoss_reset_data(
 				struct reset_controller_dev *rcdev)
 {
@@ -53,6 +64,9 @@ static int qcom_aoss_control_assert(struct reset_controller_dev *rcdev,
 	struct qcom_aoss_reset_data *data = to_qcom_aoss_reset_data(rcdev);
 	const struct qcom_aoss_reset_map *map = &data->desc->resets[idx];
 
+	if (!map->reg)
+		return -EINVAL;
+
 	writel(1, data->base + map->reg);
 	/* Wait 6 32kHz sleep cycles for reset */
 	usleep_range(200, 300);
@@ -64,6 +78,9 @@ static int qcom_aoss_control_deassert(struct reset_controller_dev *rcdev,
 {
 	struct qcom_aoss_reset_data *data = to_qcom_aoss_reset_data(rcdev);
 	const struct qcom_aoss_reset_map *map = &data->desc->resets[idx];
+
+	if (!map->reg)
+		return -EINVAL;
 
 	writel(0, data->base + map->reg);
 	/* Wait 6 32kHz sleep cycles for reset */
@@ -114,6 +131,7 @@ static int qcom_aoss_reset_probe(struct platform_device *pdev)
 
 static const struct of_device_id qcom_aoss_reset_of_match[] = {
 	{ .compatible = "qcom,sdm845-aoss-cc", .data = &sdm845_aoss_desc },
+	{ .compatible = "qcom,x1e80100-aoss-cc", .data = &x1e80100_aoss_desc },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qcom_aoss_reset_of_match);

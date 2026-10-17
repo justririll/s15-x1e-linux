@@ -30,6 +30,10 @@ properties:
         items:
           - const: qcom,sdm845-aoss-cc
 
+      - description: on X1E80100 SoCs the following compatibles must be specified
+        items:
+          - const: qcom,x1e80100-aoss-cc
+
   reg:
     maxItems: 1
 
