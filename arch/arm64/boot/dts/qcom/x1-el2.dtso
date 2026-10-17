@@ -68,10 +68,17 @@
 };
 
 &remoteproc_adsp {
-	iommus = <&apps_smmu 0x1000 0x80>;
+	/*
+	 * Started by qcom_q6v5_adsp without TZ PAS. No iommus: the ADSP streams stay in
+	 * bypass as with the hypervisor; a Linux domain with only the carveouts mapped
+	 * makes the ADSP fault on its peripheral accesses.
+	 */
+	compatible = "qcom,x1e80100-adsp-pil";
 };
 
 &remoteproc_cdsp {
+	/* Started by qcom_q6v5_adsp without TZ PAS */
+	compatible = "qcom,x1e80100-cdsp-pil";
 	iommus = <&apps_smmu 0x0c00 0x0>;
 };
 
