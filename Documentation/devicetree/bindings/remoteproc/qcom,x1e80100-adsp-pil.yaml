@@ -42,10 +42,12 @@ properties:
   clocks:
     items:
       - description: XO clock
+      - description: Q6 core clock from the Q6SS clock controller
 
   clock-names:
     items:
       - const: xo
+      - const: core
 
   power-domains:
     minItems: 2
@@ -163,6 +165,7 @@ additionalProperties: false
 examples:
   - |
     #include <dt-bindings/clock/qcom,rpmh.h>
+    #include <dt-bindings/clock/qcom,x1e80100-q6sscc.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/interrupt-controller/irq.h>
     #include <dt-bindings/power/qcom,rpmhpd.h>
@@ -180,8 +183,9 @@ examples:
                               <&smp2p_cdsp_in 3 IRQ_TYPE_EDGE_RISING>;
         interrupt-names = "wdog", "fatal", "ready", "handover", "stop-ack";
 
-        clocks = <&rpmhcc RPMH_CXO_CLK>;
-        clock-names = "xo";
+        clocks = <&rpmhcc RPMH_CXO_CLK>,
+                 <&cdsp_q6sscc Q6SSCC_Q6_CORE_CLK_SRC>;
+        clock-names = "xo", "core";
 
         power-domains = <&rpmhpd RPMHPD_CX>,
                         <&rpmhpd RPMHPD_MXC>,
