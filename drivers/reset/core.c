@@ -1058,19 +1058,32 @@ static int __reset_add_reset_gpio_device(struct fwnode_handle *fwnode,
 
 	guard(mutex)(&reset_gpio_lookup_mutex);
 
+	parent = gpio_device_to_device(gdev);
+
 	list_for_each_entry(rgpio_dev, &reset_gpio_lookup_list, list) {
 		if (fwnode_reference_args_equal(args, &rgpio_dev->ref_args)) {
+			if (rgpio_dev->adev.dev.parent == parent) {
+				/*
+				 * Already on the list, create the device link
+				 * and stop here.
+				 */
+				reset_gpio_add_devlink(fwnode, rgpio_dev);
+				return 0;
+			}
 			/*
-			 * Already on the list, create the device link
-			 * and stop here.
+			 * The GPIO controller was unbound and bound again (e.g. the
+			 * LPASS LPI pinctrl across an ADSP restart): the old device
+			 * hangs off the dead gpio_device and can never bind again.
+			 * Retire it (its memory is leaked on purpose, see the release
+			 * callback) and create a fresh one below.
 			 */
-			reset_gpio_add_devlink(fwnode, rgpio_dev);
-			return 0;
+			list_del(&rgpio_dev->list);
+			auxiliary_device_delete(&rgpio_dev->adev);
+			break;
 		}
 	}
 
 	lflags = GPIO_PERSISTENT | (flags & GPIO_ACTIVE_LOW);
-	parent = gpio_device_to_device(gdev);
 	properties[prop++] = PROPERTY_ENTRY_STRING("compatible", "reset-gpio");
 	properties[prop++] = PROPERTY_ENTRY_GPIO("reset-gpios", parent->fwnode, offset, lflags);
 
