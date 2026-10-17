@@ -78,6 +78,18 @@ static const struct qcom_pdc_reset_desc sc7280_pdc_reset_desc = {
 	.offset = RPMH_SC7280_PDC_SYNC_RESET,
 };
 
+/* Only the DSP resets are known on X1E80100; compute moved to bit 7 */
+static const struct qcom_pdc_reset_map x1e80100_pdc_resets[] = {
+	[PDC_AUDIO_SYNC_RESET] = {2},
+	[PDC_COMPUTE_SYNC_RESET] = {7},
+};
+
+static const struct qcom_pdc_reset_desc x1e80100_pdc_reset_desc = {
+	.resets = x1e80100_pdc_resets,
+	.num_resets = ARRAY_SIZE(x1e80100_pdc_resets),
+	.offset = RPMH_SC7280_PDC_SYNC_RESET,
+};
+
 static inline struct qcom_pdc_reset_data *to_qcom_pdc_reset_data(
 				struct reset_controller_dev *rcdev)
 {
@@ -144,6 +156,7 @@ static int qcom_pdc_reset_probe(struct platform_device *pdev)
 static const struct of_device_id qcom_pdc_reset_of_match[] = {
 	{ .compatible = "qcom,sc7280-pdc-global", .data = &sc7280_pdc_reset_desc },
 	{ .compatible = "qcom,sdm845-pdc-global", .data = &sdm845_pdc_reset_desc },
+	{ .compatible = "qcom,x1e80100-pdc-global", .data = &x1e80100_pdc_reset_desc },
 	{}
 };
 MODULE_DEVICE_TABLE(of, qcom_pdc_reset_of_match);
