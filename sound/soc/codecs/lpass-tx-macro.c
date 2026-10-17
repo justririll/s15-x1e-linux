@@ -2389,6 +2389,12 @@ static void tx_macro_remove(struct platform_device *pdev)
 {
 	struct tx_macro *tx = dev_get_drvdata(&pdev->dev);
 
+	/* Runtime callbacks must finish before managed clock providers disappear. */
+	pm_runtime_force_suspend(&pdev->dev);
+	/* Balance force_suspend; devm cleanup owns the final disable. */
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
+
 	lpass_macro_pds_exit(tx->pds);
 }
 

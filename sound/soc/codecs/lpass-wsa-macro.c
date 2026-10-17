@@ -2914,6 +2914,15 @@ static const struct of_device_id wsa_macro_dt_match[] = {
 };
 MODULE_DEVICE_TABLE(of, wsa_macro_dt_match);
 
+static void wsa_macro_remove(struct platform_device *pdev)
+{
+	/* Runtime callbacks must finish before managed clock providers disappear. */
+	pm_runtime_force_suspend(&pdev->dev);
+	/* Balance force_suspend; devm cleanup owns the final disable. */
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
+}
+
 static struct platform_driver wsa_macro_driver = {
 	.driver = {
 		.name = "wsa_macro",
@@ -2921,6 +2930,7 @@ static struct platform_driver wsa_macro_driver = {
 		.pm = pm_ptr(&wsa_macro_pm_ops),
 	},
 	.probe = wsa_macro_probe,
+	.remove = wsa_macro_remove,
 };
 
 module_platform_driver(wsa_macro_driver);

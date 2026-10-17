@@ -522,7 +522,7 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 					 union power_supply_propval *val)
 {
 	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
-	enum qcom_battmgr_unit unit = battmgr->unit;
+	enum qcom_battmgr_unit unit;
 	int ret;
 
 	if (!battmgr->service_up)
@@ -535,6 +535,9 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 		ret = qcom_battmgr_bat_sm8350_update(battmgr, psp);
 	if (ret < 0)
 		return ret;
+
+	/* update_info may select units on this very first read. */
+	unit = battmgr->unit;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
@@ -1660,6 +1663,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 	struct qcom_battmgr *battmgr = priv;
 
 	if (state == SERVREG_SERVICE_STATE_UP) {
+		WRITE_ONCE(battmgr->info.valid, false);
 		battmgr->service_up = true;
 		schedule_work(&battmgr->enable_work);
 	} else {

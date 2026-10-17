@@ -1960,8 +1960,7 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 
 	ret = devm_request_threaded_irq(dev, ctrl->irq, NULL,
 					qcom_swrm_irq_handler,
-					IRQF_TRIGGER_RISING |
-					IRQF_ONESHOT,
+					IRQF_ONESHOT, /* DT owns the trigger type across reprobe. */
 					"soundwire", ctrl);
 	if (ret) {
 		dev_err(dev, "Failed to request soundwire irq\n");
@@ -2054,7 +2053,14 @@ err_init:
 
 static void qcom_swrm_remove(struct platform_device *pdev)
 {
-	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(&pdev->dev);
+	struct device *dev = &pdev->dev;
+	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dev);
+	int active;
+
+	/* No callback may outlive ctrl or run on a new, half-built bus. */
+	active = pm_runtime_resume_and_get(dev);
+	pm_runtime_disable(dev);
+	pm_runtime_dont_use_autosuspend(dev);
 
 	/* delete bus before dropping peer_ctrl; in-flight ops deref it */
 	if (!ctrl->is_dependent)
@@ -2071,7 +2077,12 @@ static void qcom_swrm_remove(struct platform_device *pdev)
 		ctrl->peer_ctrl = NULL;
 	}
 
+	disable_irq(ctrl->irq);
+	synchronize_irq(ctrl->irq);
 	clk_disable_unprepare(ctrl->hclk);
+	if (active >= 0)
+		pm_runtime_put_noidle(dev);
+	pm_runtime_set_suspended(dev);
 }
 
 static int __maybe_unused swrm_runtime_resume(struct device *dev)
