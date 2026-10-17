@@ -357,6 +357,15 @@ config CLK_X1E80100_GPUCC
 	  Say Y if you want to support graphics controller devices and
 	  functionality such as 3D graphics.
 
+config CLK_X1E80100_Q6SSCC
+	tristate "X1E80100 QDSP6SS Q6 core clock controller"
+	depends on ARM64 || COMPILE_TEST
+	help
+	  Support for the Q6 core PLL and RCG of the ADSP and CDSP on X1E80100,
+	  for Linux running at EL2 without the Qualcomm hypervisor, where the
+	  remoteproc driver starts the DSPs itself.
+	  Say Y or M if you want to use the DSPs at EL2.
+
 config CLK_X1E80100_TCSRCC
 	tristate "X1E80100 TCSR Clock Controller"
 	depends on ARM64 || COMPILE_TEST
