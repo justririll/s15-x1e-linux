@@ -161,6 +161,8 @@ iova_insert_rbtree(struct rb_root *root, struct iova *iova,
 	rb_insert_color(&iova->node, root);
 }
 
+#define IOVA_MAX_ALIGN_SHIFT	10
+
 static int __alloc_and_insert_iova_range(struct iova_domain *iovad,
 		unsigned long size, unsigned long limit_pfn,
 			struct iova *new, bool size_aligned)
@@ -172,8 +174,13 @@ static int __alloc_and_insert_iova_range(struct iova_domain *iovad,
 	unsigned long align_mask = ~0UL;
 	unsigned long high_pfn = limit_pfn, low_pfn = iovad->start_pfn;
 
+	/*
+	 * Cap the natural alignment at IOVA_MAX_ALIGN_SHIFT granules (4 MiB with 4K pages):
+	 * fully size-aligned multi-hundred-MiB buffers fragment a 32-bit window (X1E FastRPC
+	 * context banks) long before it is full.
+	 */
 	if (size_aligned)
-		align_mask <<= fls_long(size - 1);
+		align_mask <<= min_t(unsigned long, fls_long(size - 1), IOVA_MAX_ALIGN_SHIFT);
 
 	/* Walk the tree backwards */
 	spin_lock_irqsave(&iovad->iova_rbtree_lock, flags);
