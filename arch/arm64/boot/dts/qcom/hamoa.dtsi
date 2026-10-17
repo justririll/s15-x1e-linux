@@ -4359,6 +4359,14 @@
 			#interconnect-cells = <2>;
 		};
 
+		adsp_q6sscc: clock-controller@6840000 {
+			compatible = "qcom,x1e80100-adsp-q6sscc";
+			reg = <0x0 0x06840000 0x0 0x10000>;
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			#clock-cells = <1>;
+			status = "disabled"; /* Programmed by the hypervisor */
+		};
+
 		remoteproc_adsp: remoteproc@6800000 {
 			compatible = "qcom,x1e80100-adsp-pas";
 			reg = <0x0 0x06800000 0x0 0x10000>;
@@ -9517,6 +9525,14 @@
 				    "llcc_broadcast_base",
 				    "llcc_broadcast_and_base";
 			interrupts = <GIC_SPI 266 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		cdsp_q6sscc: clock-controller@32340000 {
+			compatible = "qcom,x1e80100-cdsp-q6sscc";
+			reg = <0x0 0x32340000 0x0 0x10000>;
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			#clock-cells = <1>;
+			status = "disabled"; /* Programmed by the hypervisor */
 		};
 
 		remoteproc_cdsp: remoteproc@32300000 {

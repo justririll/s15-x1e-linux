@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
+#include <dt-bindings/clock/qcom,rpmh.h>
+#include <dt-bindings/clock/qcom,x1e80100-q6sscc.h>
 #include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/reset/qcom,sdm845-aoss.h>
 #include <dt-bindings/reset/qcom,sdm845-pdc.h>
@@ -76,6 +78,9 @@
 	 * makes the ADSP fault on its peripheral accesses.
 	 */
 	compatible = "qcom,x1e80100-adsp-pil";
+	clocks = <&rpmhcc RPMH_CXO_CLK>,
+		 <&adsp_q6sscc Q6SSCC_Q6_CORE_CLK_SRC>;
+	clock-names = "xo", "core";
 	resets = <&pdc_reset PDC_AUDIO_SYNC_RESET>,
 		 <&aoss_reset AOSS_CC_LPASS_RESTART>;
 	reset-names = "pdc_sync", "restart";
@@ -85,6 +90,9 @@
 &remoteproc_cdsp {
 	/* Started by qcom_q6v5_adsp without TZ PAS */
 	compatible = "qcom,x1e80100-cdsp-pil";
+	clocks = <&rpmhcc RPMH_CXO_CLK>,
+		 <&cdsp_q6sscc Q6SSCC_Q6_CORE_CLK_SRC>;
+	clock-names = "xo", "core";
 	iommus = <&apps_smmu 0x0c00 0x0>;
 	resets = <&pdc_reset PDC_COMPUTE_SYNC_RESET>,
 		 <&aoss_reset AOSS_CC_TURING_RESTART>;
@@ -93,6 +101,14 @@
 };
 
 &pdc_reset {
+	status = "okay";
+};
+
+&adsp_q6sscc {
+	status = "okay";
+};
+
+&cdsp_q6sscc {
 	status = "okay";
 };
 
