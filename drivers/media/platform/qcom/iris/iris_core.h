@@ -56,6 +56,7 @@ struct qcom_ubwc_cfg_data;
  * @p_dev: reference to pixel device structure
  * @fw_dev: reference to firmware device structure
  * @pas_ctx: PAS context for authenticated firmware load and shutdown
+ * @fw_no_tz: firmware IOMMU domain and mapping for the EL2 no-TZ path
  * @reg_base: IO memory base address
  * @irq: iris irq
  * @v4l2_dev: a holder for v4l2 device structure
@@ -108,6 +109,10 @@ struct iris_core {
 	struct device				*p_dev;
 	struct device				*fw_dev;
 	struct qcom_pas_context			*pas_ctx;
+	struct {
+		struct iommu_domain		*iommu_domain;
+		size_t				mapped_mem_size;
+	} fw_no_tz;
 	void __iomem				*reg_base;
 	int					irq;
 	struct v4l2_device			v4l2_dev;

@@ -7,7 +7,9 @@
 #include <linux/firmware/qcom/qcom_pas.h>
 #include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/iommu.h>
+#include <linux/module.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/soc/qcom/mdt_loader.h>
 
@@ -17,6 +19,142 @@
 #define IRIS_PAS_ID				9
 
 #define IRIS_FIRMWARE_START_ADDR	0
+
+#define WRAPPER_TZ_BASE_OFFS		0x000C0000
+
+#define WRAPPER_TZ_XTSS_SW_RESET	(WRAPPER_TZ_BASE_OFFS + 0x1000)
+#define WRAPPER_XTSS_SW_RESET_BIT	BIT(0)
+
+#define WRAPPER_CPA_START_ADDR		(WRAPPER_TZ_BASE_OFFS + 0x1020)
+#define WRAPPER_CPA_END_ADDR		(WRAPPER_TZ_BASE_OFFS + 0x1024)
+#define WRAPPER_FW_START_ADDR		(WRAPPER_TZ_BASE_OFFS + 0x1028)
+#define WRAPPER_FW_END_ADDR		(WRAPPER_TZ_BASE_OFFS + 0x102C)
+#define WRAPPER_NONPIX_START_ADDR	(WRAPPER_TZ_BASE_OFFS + 0x1030)
+#define WRAPPER_NONPIX_END_ADDR		(WRAPPER_TZ_BASE_OFFS + 0x1034)
+
+static bool no_tz = true;
+module_param(no_tz, bool, 0444);
+MODULE_PARM_DESC(no_tz, "With a video-firmware node, start the firmware directly instead of PAS (EL2)");
+
+static bool iris_use_no_tz(struct iris_core *core)
+{
+	return no_tz && core->fw_dev;
+}
+
+static void iris_reset_cpu_no_tz(struct iris_core *core)
+{
+	u32 fw_size = core->fw_no_tz.mapped_mem_size;
+
+	writel(0, core->reg_base + WRAPPER_FW_START_ADDR);
+	writel(fw_size, core->reg_base + WRAPPER_FW_END_ADDR);
+	writel(0, core->reg_base + WRAPPER_CPA_START_ADDR);
+	writel(fw_size, core->reg_base + WRAPPER_CPA_END_ADDR);
+	writel(fw_size, core->reg_base + WRAPPER_NONPIX_START_ADDR);
+	writel(fw_size, core->reg_base + WRAPPER_NONPIX_END_ADDR);
+
+	/* Bring XTSS out of reset */
+	writel(0, core->reg_base + WRAPPER_TZ_XTSS_SW_RESET);
+}
+
+static void iris_fw_no_tz_deinit(void *data)
+{
+	struct iris_core *core = data;
+
+	iommu_detach_device(core->fw_no_tz.iommu_domain, core->fw_dev);
+	iommu_domain_free(core->fw_no_tz.iommu_domain);
+	core->fw_no_tz.iommu_domain = NULL;
+}
+
+/* Give the firmware SID its own paging domain so the image can sit at IOVA 0 */
+static int iris_fw_no_tz_init(struct iris_core *core)
+{
+	struct iommu_domain *domain;
+	int ret;
+
+	if (core->fw_no_tz.iommu_domain)
+		return 0;
+
+	ret = of_dma_configure(core->fw_dev, core->fw_dev->of_node, true);
+	if (ret) {
+		dev_err(core->fw_dev, "failed to configure dma: %d\n", ret);
+		return ret;
+	}
+
+	domain = iommu_paging_domain_alloc(core->fw_dev);
+	if (IS_ERR(domain)) {
+		dev_err(core->fw_dev, "failed to allocate iommu domain: %pe\n", domain);
+		return PTR_ERR(domain);
+	}
+
+	ret = iommu_attach_device(domain, core->fw_dev);
+	if (ret) {
+		dev_err(core->fw_dev, "could not attach device to IOMMU: %d\n", ret);
+		iommu_domain_free(domain);
+		return ret;
+	}
+
+	core->fw_no_tz.iommu_domain = domain;
+
+	return devm_add_action_or_reset(core->dev, iris_fw_no_tz_deinit, core);
+}
+
+static void iris_detect_firmware(struct iris_core *core, const char *fw_name,
+				 const u8 *data, size_t size,
+				 const struct iris_firmware_desc *desc);
+
+static int iris_load_fw_no_tz(struct iris_core *core, const struct firmware *firmware,
+			      const char *fw_name, const struct iris_firmware_desc *desc,
+			      phys_addr_t mem_phys, size_t res_size)
+{
+	void *mem_virt;
+	int ret;
+
+	ret = iris_fw_no_tz_init(core);
+	if (ret)
+		return ret;
+
+	mem_virt = memremap(mem_phys, res_size, MEMREMAP_WC);
+	if (!mem_virt)
+		return -ENOMEM;
+
+	ret = qcom_mdt_load_no_init(core->dev, firmware, fw_name,
+				    mem_virt, mem_phys, res_size, NULL);
+	/*
+	 * Like the PAS path: publish iris_firmware_data (HFI generation,
+	 * core_arch, ...) from the loaded image. Without it the first
+	 * iris_vpu_boot_firmware() dereferences a NULL iris_firmware_data.
+	 */
+	if (!ret)
+		iris_detect_firmware(core, fw_name, mem_virt, res_size, desc);
+	memunmap(mem_virt);
+	if (ret)
+		return ret;
+
+	ret = iommu_map(core->fw_no_tz.iommu_domain, IRIS_FIRMWARE_START_ADDR,
+			mem_phys, res_size,
+			IOMMU_READ | IOMMU_WRITE | IOMMU_PRIV, GFP_KERNEL);
+	if (ret) {
+		dev_err(core->dev, "failed to map firmware in IOMMU: %d\n", ret);
+		return ret;
+	}
+	core->fw_no_tz.mapped_mem_size = res_size;
+
+	return 0;
+}
+
+static void iris_fw_no_tz_unmap(struct iris_core *core)
+{
+	size_t unmapped;
+
+	if (!core->fw_no_tz.mapped_mem_size)
+		return;
+
+	unmapped = iommu_unmap(core->fw_no_tz.iommu_domain, IRIS_FIRMWARE_START_ADDR,
+			       core->fw_no_tz.mapped_mem_size);
+	if (unmapped != core->fw_no_tz.mapped_mem_size)
+		dev_err(core->dev, "failed to unmap firmware in IOMMU\n");
+	core->fw_no_tz.mapped_mem_size = 0;
+}
 
 /* Detect Gen2 firmware by scanning the blob for:
  *   QC_IMAGE_VERSION_STRING=<version>
@@ -213,6 +351,11 @@ static int iris_load_fw_to_memory(struct iris_core *core)
 		goto err_release_fw;
 	}
 
+	if (iris_use_no_tz(core)) {
+		ret = iris_load_fw_no_tz(core, firmware, fw_name, desc, mem_phys, res_size);
+		goto err_release_fw;
+	}
+
 	core->pas_ctx->use_tzmem = !!core->fw_dev;
 	ret = qcom_mdt_pas_load(core->pas_ctx, firmware, fw_name, NULL);
 	if (ret)
@@ -268,6 +411,11 @@ int iris_fw_load(struct iris_core *core)
 		return ret;
 	}
 
+	if (iris_use_no_tz(core)) {
+		iris_reset_cpu_no_tz(core);
+		return 0;
+	}
+
 	ret = qcom_pas_prepare_and_auth_reset(core->pas_ctx);
 	if (ret)  {
 		dev_err(core->dev, "auth and reset failed: %d\n", ret);
@@ -300,6 +448,12 @@ int iris_fw_unload(struct iris_core *core)
 {
 	int ret;
 
+	if (iris_use_no_tz(core)) {
+		writel(WRAPPER_XTSS_SW_RESET_BIT, core->reg_base + WRAPPER_TZ_XTSS_SW_RESET);
+		iris_fw_no_tz_unmap(core);
+		return 0;
+	}
+
 	ret = qcom_pas_shutdown(IRIS_PAS_ID);
 	iris_fw_iommu_unmap(core);
 
@@ -308,5 +462,14 @@ int iris_fw_unload(struct iris_core *core)
 
 int iris_set_hw_state(struct iris_core *core, bool resume)
 {
+	if (iris_use_no_tz(core)) {
+		if (resume)
+			iris_reset_cpu_no_tz(core);
+		else
+			writel(WRAPPER_XTSS_SW_RESET_BIT,
+			       core->reg_base + WRAPPER_TZ_XTSS_SW_RESET);
+		return 0;
+	}
+
 	return qcom_pas_set_remote_state(resume, 0);
 }
