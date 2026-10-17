@@ -196,6 +196,7 @@ config QCOM_Q6V5_ADSP
 	select QCOM_MDT_LOADER
 	select QCOM_Q6V5_COMMON
 	select QCOM_RPROC_COMMON
+	select QCOM_PAS
 	help
 	  Say y here to support the Peripheral Image Loader
 	  for the non-TrustZone part of Qualcomm Technology Inc. ADSP and CDSP
