@@ -567,12 +567,10 @@ static const struct rproc_ops adsp_ops = {
 };
 
 /*
- * X1E80100 ADSP/CDSP for Linux running at EL2 without a hypervisor. The clock/PLL bring-up, boot and stop sequences were recovered from
- * the Qualcomm hypervisor (QHEE .367) that normally runs them, and are replayed as plain
- * MMIO accesses on the absolute addresses QHEE uses.
- *
- * Several of these registers belong to clock controllers that have (or should have)
- * their own drivers.
+ * X1E80100 ADSP/CDSP for Linux running at EL2 without a hypervisor. The clock/PLL
+ * bring-up, boot and stop sequences are the ones the Qualcomm hypervisor (QHEE .367)
+ * normally runs. Several of the registers belong to clock controllers that have, or
+ * should have, their own drivers.
  */
 
 #define QHEE_CDSP_MAP_MAX	128
@@ -702,8 +700,8 @@ static const struct { u64 pa; u64 size; u32 perm; } qhee_cdsp_map[] = {
 	{ 0x10045000, 0x1000, 0x6 },	/*  59 QDSS_MERG_FUN_MERG_FUN_CXATBFUNNEL_128W2SP */
 	{ 0x10046000, 0x1000, 0x6 },	/*  60 QDSS_REPL64_REPL64_CXATBREPLICATOR_64WP */
 	{ 0x10048000, 0x1000, 0x6 },	/*  61 QDSS_ETR_ETR_CXTMC_R64W32D */
-	{ 0x10980000, 0x1000, 0x6 },	/*  62 QDSS_TURING_APB_TURING_TPDM0_TPDM0_TPDM_ATB32_APCLK_DSB128_CSD9C89B96 */
-	{ 0x10981000, 0x1000, 0x6 },	/*  63 QDSS_TURING_APB_TURING_TPDM1_TPDM1_TPDM_ATB32_APCLK_CMB32_CSE533A018 */
+	{ 0x10980000, 0x1000, 0x6 },	/*  62 QDSS_TURING_APB_TURING_TPDM0 */
+	{ 0x10981000, 0x1000, 0x6 },	/*  63 QDSS_TURING_APB_TURING_TPDM1 */
 	{ 0x146aa000, 0x1000, 0x6 },	/*  64 boot IMEM (shared) */
 	{ 0x16000000, 0x1000000, 0x2 },	/*  65 QDSS STM stimulus */
 	{ 0x20c21000, 0x1000, 0x4 },	/*  66 security/boot policy status */
@@ -763,10 +761,8 @@ static void x1e_map_qhee(struct qcom_adsp *pas, struct rproc *rproc)
 			prot |= IOMMU_READ;
 		if (qhee_cdsp_map[i].perm & 2)
 			prot |= IOMMU_WRITE;
-		dev_dbg(&rproc->dev, "map[%d] before pa=%llx size=%llx\n", i, qhee_cdsp_map[i].pa, qhee_cdsp_map[i].size);
 		ret = iommu_map(rproc->domain, qhee_cdsp_map[i].pa, qhee_cdsp_map[i].pa,
 				qhee_cdsp_map[i].size, prot, GFP_KERNEL);
-		dev_dbg(&rproc->dev, "map[%d] after ret=%d\n", i, ret);
 		if (ret) {
 			fails++;
 			dev_warn(&rproc->dev, "qhee map %llx+%llx: %d\n",
@@ -775,8 +771,9 @@ static void x1e_map_qhee(struct qcom_adsp *pas, struct rproc *rproc)
 			set_bit(i, pas->qhee_mapped);
 		}
 	}
-	dev_info(&rproc->dev, "QHEE CDSP apertures mapped: %zu, failed %d\n",
-		 ARRAY_SIZE(qhee_cdsp_map), fails);
+	if (fails)
+		dev_warn(&rproc->dev, "%d of %zu CDSP apertures not mapped\n", fails,
+			 ARRAY_SIZE(qhee_cdsp_map));
 }
 
 /* Undo x1e_map_qhee() */
@@ -807,11 +804,8 @@ static void x1e_unmap_qhee(struct qcom_adsp *pas, struct rproc *rproc)
 
 /* Register blocks touched by the sequences, mapped once at probe */
 enum x1e_blk {
-	X1E_QDSP6SS,		/* QDSP6 subsystem: EVB, boot FSM, DTB descriptor */
+	X1E_QDSP6SS,		/* QDSP6 subsystem (the DT reg): EVB, boot FSM, DTB descriptor */
 	X1E_Q6SS_CC,		/* Q6 core clock controller: PLL, core RCG and branches */
-	X1E_HALT,		/* TCSR halt request/ack for the DSP NoC port */
-	X1E_PDC,		/* PDC_GLOBAL sync reset */
-	X1E_AOSS,		/* AOSS_CC subsystem reset */
 	X1E_TCSR_SOC,		/* TCSR SoC hardware version */
 	/* CDSP only */
 	X1E_TURING_CC,
@@ -829,6 +823,7 @@ enum x1e_blk {
 	X1E_LPASS_HOST_LINK,
 	X1E_NR_BLK
 };
+
 static_assert(X1E_NR_BLK <= X1E_NR_BLK_MAX);
 
 struct x1e_blk_desc {
@@ -886,7 +881,7 @@ struct x1e_blk_desc {
 #define CBCR_BIT22			BIT(22)
 #define CBCR_CLK_OFF			BIT(31)
 
-/* TCSR halt block, same layout as LPASS_HALTREQ_REG etc. */
+/* TCSR halt block (qcom,halt-regs): LPASS_HALTREQ_REG etc. plus these on X1E */
 #define HALT_PWR_ON			0x0c
 #define HALT_OFF_14			0x14
 
@@ -931,16 +926,11 @@ struct x1e_blk_desc {
 #define AUDIO_ZONDA_PLL_MODE		0x0
 #define AUDIO_ZONDA_PLL_OPMODE		0x30
 #define AUDIO_DIG_PLL_OPMODE		0x1004
-#define LPMLA_CORE_CTL(n)		(0x1064 + 0x10000 * (n))	/* n=0 LPMLA, n=1 AOC LPMLA */
+/* n = 0: LPMLA, n = 1: AOC LPMLA */
+#define LPMLA_CORE_CTL(n)		(0x1064 + 0x10000 * (n))
 #define LPMLA_CORE_STATUS(n)		(0x1068 + 0x10000 * (n))
 #define SSC_SCC_OFF_4C			0x4c
 #define LPASS_HOST_LINK_CTL		0x0
-
-/* PDC_GLOBAL sync reset bits and AOSS_CC reset registers on X1E80100 */
-#define PDC_SYNC_RESET_AUDIO		BIT(2)
-#define PDC_SYNC_RESET_COMPUTE		BIT(7)
-#define AOSS_CC_LPASS_RESTART		0x14
-#define AOSS_CC_TURING_RESTART		0x20
 
 #define X1E_SOC_HW_VERSION		0x0
 
@@ -973,6 +963,27 @@ static int x1e_poll(struct qcom_adsp *pas, enum x1e_blk blk, u32 off, u32 mask, 
 
 	return readl_poll_timeout(x1e_reg(pas, blk, off), val, (val & mask) == want, 1,
 				  timeout_us);
+}
+
+static u32 x1e_halt_rd(struct qcom_adsp *pas, u32 reg)
+{
+	u32 val = 0;
+
+	regmap_read(pas->halt_map, pas->halt_lpass + reg, &val);
+	return val;
+}
+
+static void x1e_halt_wr(struct qcom_adsp *pas, u32 reg, u32 val)
+{
+	regmap_write(pas->halt_map, pas->halt_lpass + reg, val);
+}
+
+static int x1e_halt_wait_ack(struct qcom_adsp *pas)
+{
+	u32 val;
+
+	return regmap_read_poll_timeout(pas->halt_map, pas->halt_lpass + LPASS_HALTACK_REG,
+					val, val & 1, 5, 1000000);
 }
 
 /* Turn a branch clock on; under hardware control it may not report CLK_OFF = 0 */
@@ -1166,19 +1177,6 @@ static int x1e_cdsp_bringup(struct qcom_adsp *pas)
 	return 0;
 }
 
-/* PDC sync reset and AOSS restart pulse, as in qcom_adsp_shutdown() */
-static void x1e_reset_pulse(struct qcom_adsp *pas, u32 pdc_bit, u32 aoss_reg)
-{
-	x1e_rmw(pas, X1E_PDC, 0, 0, pdc_bit);
-	x1e_wr(pas, X1E_AOSS, aoss_reg, 1);
-	udelay(200);
-	x1e_rmw(pas, X1E_HALT, LPASS_HALTREQ_REG, 1, 0);
-	usleep_range(10000, 11000);
-	x1e_rmw(pas, X1E_PDC, 0, pdc_bit, 0);
-	x1e_wr(pas, X1E_AOSS, aoss_reg, 0);
-	udelay(200);
-}
-
 static int x1e_cdsp_shutdown(struct qcom_adsp *pas)
 {
 	static const u32 bit22_branches[] = { 0x8060, 0x8080, 0x80a0, 0x80c0, 0x8100, 0x81c8,
@@ -1193,11 +1191,11 @@ static int x1e_cdsp_shutdown(struct qcom_adsp *pas)
 	x1e_rmw(pas, X1E_GCC_TURING, GCC_TURING_CFG_AHB_CBCR, CBCR_CLK_ENABLE, 0);
 
 	/* Like QHEE: halt the NSP NoC port only if it is up and not idle yet */
-	if ((x1e_rd(pas, X1E_HALT, HALT_PWR_ON) & 1) &&
-	    (!(x1e_rd(pas, X1E_HALT, LPASS_MASTER_IDLE_REG) & 1) ||
-	     !(x1e_rd(pas, X1E_HALT, HALT_OFF_14) & 1))) {
-		x1e_rmw(pas, X1E_HALT, LPASS_HALTREQ_REG, 0, 1);
-		if (x1e_poll(pas, X1E_HALT, LPASS_HALTACK_REG, 1, 1, 1000000))
+	if ((x1e_halt_rd(pas, HALT_PWR_ON) & 1) &&
+	    (!(x1e_halt_rd(pas, LPASS_MASTER_IDLE_REG) & 1) ||
+	     !(x1e_halt_rd(pas, HALT_OFF_14) & 1))) {
+		x1e_halt_wr(pas, LPASS_HALTREQ_REG, 1);
+		if (x1e_halt_wait_ack(pas))
 			dev_warn(pas->dev, "NSP port did not halt\n");
 	}
 
@@ -1219,7 +1217,13 @@ static int x1e_cdsp_shutdown(struct qcom_adsp *pas)
 	if (ret)
 		return ret;
 
-	x1e_reset_pulse(pas, PDC_SYNC_RESET_COMPUTE, AOSS_CC_TURING_RESTART);
+	/* As in qcom_adsp_shutdown(), with QHEE's longer wait before the release */
+	reset_control_assert(pas->pdc_sync_reset);
+	reset_control_assert(pas->restart);
+	x1e_halt_wr(pas, LPASS_HALTREQ_REG, 0);
+	usleep_range(10000, 11000);
+	reset_control_deassert(pas->pdc_sync_reset);
+	reset_control_deassert(pas->restart);
 
 	return 0;
 }
@@ -1258,11 +1262,13 @@ static int x1e_adsp_shutdown(struct qcom_adsp *pas)
 	if (x1e_rd(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_HM_GDSCR) & BIT(31)) {
 		if (x1e_rd(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_GDSC_OFF_2000) & BIT(0))
 			x1e_wr(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_GDSC_OFF_2000, 0);
-		x1e_rmw(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_HM_GDSCR, LPASS_CORE_HM_GDSCR_RETAIN, 0);
+		x1e_rmw(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_HM_GDSCR,
+			LPASS_CORE_HM_GDSCR_RETAIN, 0);
 		x1e_rmw(pas, X1E_LPASS_CORE_CC, LPASS_CORE_CFG_RCGR, RCG_CFG_SRC_SEL, 0);
 		x1e_rmw(pas, X1E_LPASS_CORE_CC, LPASS_CORE_CFG_RCGR, RCG_CFG_SRC_DIV, 0);
 		x1e_rmw(pas, X1E_LPASS_CORE_CC, LPASS_CORE_CMD_RCGR, 0, RCG_CMD_UPDATE);
-		ret = x1e_poll(pas, X1E_LPASS_CORE_CC, LPASS_CORE_CMD_RCGR, RCG_CMD_UPDATE, 0, 100000);
+		ret = x1e_poll(pas, X1E_LPASS_CORE_CC, LPASS_CORE_CMD_RCGR, RCG_CMD_UPDATE, 0,
+			       100000);
 		if (ret)
 			return ret;
 		x1e_rmw(pas, X1E_LPASS_CORE_CC, LPASS_CORE_DIG_PLL_OPMODE, 0x7, 0);
@@ -1296,11 +1302,11 @@ static int x1e_adsp_shutdown(struct qcom_adsp *pas)
 		x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_1108C, 0, BIT(0));
 		if (x1e_poll(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_1108C, BIT(31), BIT(31), 300)) {
 			x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_1108C, 0, BIT(2));
-			udelay(250);
+			usleep_range(250, 300);
 			x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_1108C, BIT(2), 0);
 		}
 		x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_1108C, BIT(0), 0);
-		udelay(150);
+		usleep_range(150, 200);
 		/* Audio PLLs off */
 		x1e_rmw(pas, X1E_LPASS_AUDIO_PLL, AUDIO_ZONDA_PLL_MODE, PLL_MODE_OUTCTRL, 0);
 		x1e_rmw(pas, X1E_LPASS_AUDIO_PLL, AUDIO_ZONDA_PLL_OPMODE, 0x7, 0);
@@ -1315,14 +1321,15 @@ static int x1e_adsp_shutdown(struct qcom_adsp *pas)
 		x1e_rmw(pas, X1E_QDSP6SS, RET_CFG_REG, 0, RET_CFG_BIT1);
 	}
 
-	x1e_wr(pas, X1E_HALT, LPASS_HALTREQ_REG, 1);
-	if (x1e_poll(pas, X1E_HALT, LPASS_HALTACK_REG, 1, 1, 1000000))
+	x1e_halt_wr(pas, LPASS_HALTREQ_REG, 1);
+	if (x1e_halt_wait_ack(pas))
 		dev_warn(pas->dev, "LPASS port did not halt\n");
 
 	if (!(x1e_rd(pas, X1E_LPASS_CORE_GDSC, LPASS_CORE_GDSC_STATUS) & BIT(0))) {
 		x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_29020, BIT(0), 0);
 		x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_29020, 0, BIT(3));
-		ret = x1e_poll(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_29020, BIT(31), BIT(31), 100000);
+		ret = x1e_poll(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_29020, BIT(31), BIT(31),
+			       100000);
 		if (ret)
 			return ret;
 		x1e_rmw(pas, X1E_LPASS_AON_CC, LPASS_AON_OFF_29010, 0, BIT(2));
@@ -1348,29 +1355,23 @@ static int x1e_adsp_shutdown(struct qcom_adsp *pas)
 
 	/* Reset, with the host link isolated around the pulse */
 	x1e_rmw(pas, X1E_LPASS_HOST_LINK, LPASS_HOST_LINK_CTL, 0, BIT(1));
-	x1e_rmw(pas, X1E_PDC, 0, 0, PDC_SYNC_RESET_AUDIO);
+	reset_control_assert(pas->pdc_sync_reset);
 	usleep_range(10000, 11000);
-	x1e_rmw(pas, X1E_AOSS, AOSS_CC_LPASS_RESTART, 0, BIT(0));
-	udelay(200);
+	reset_control_assert(pas->restart);
 	x1e_rmw(pas, X1E_LPASS_HOST_LINK, LPASS_HOST_LINK_CTL, 0, BIT(0));
-	udelay(10);
+	usleep_range(10, 20);
 	x1e_rmw(pas, X1E_LPASS_HOST_LINK, LPASS_HOST_LINK_CTL, BIT(0), 0);
-	x1e_rmw(pas, X1E_PDC, 0, PDC_SYNC_RESET_AUDIO, 0);
-	x1e_rmw(pas, X1E_AOSS, AOSS_CC_LPASS_RESTART, BIT(0), 0);
-	udelay(200);
+	reset_control_deassert(pas->pdc_sync_reset);
+	reset_control_deassert(pas->restart);
 	x1e_rmw(pas, X1E_LPASS_HOST_LINK, LPASS_HOST_LINK_CTL, BIT(1), 0);
-	x1e_wr(pas, X1E_HALT, LPASS_HALTREQ_REG, 0);
-	udelay(100);
+	x1e_halt_wr(pas, LPASS_HALTREQ_REG, 0);
+	usleep_range(100, 150);
 
 	return 0;
 }
 
 static const struct x1e_blk_desc x1e_adsp_blks[X1E_NR_BLK] = {
-	[X1E_QDSP6SS]		= { 0x06800000, 0x1000 },
 	[X1E_Q6SS_CC]		= { 0x06840000, 0x10000 },
-	[X1E_HALT]		= { 0x01f62000, 0x1000 },
-	[X1E_PDC]		= { 0x0b5e1000, 0x4 },
-	[X1E_AOSS]		= { 0x0c2f7000, 0x100 },
 	[X1E_TCSR_SOC]		= { 0x01fc8000, 0x4 },
 	[X1E_LPASS_MCC]		= { 0x07250000, 0x1000 },
 	[X1E_LPASS_TCM]		= { 0x0726a000, 0x1000 },
@@ -1384,11 +1385,7 @@ static const struct x1e_blk_desc x1e_adsp_blks[X1E_NR_BLK] = {
 };
 
 static const struct x1e_blk_desc x1e_cdsp_blks[X1E_NR_BLK] = {
-	[X1E_QDSP6SS]		= { 0x32300000, 0x1000 },
 	[X1E_Q6SS_CC]		= { 0x32340000, 0x10000 },
-	[X1E_HALT]		= { 0x01f74000, 0x1000 },
-	[X1E_PDC]		= { 0x0b5e1000, 0x4 },
-	[X1E_AOSS]		= { 0x0c2f7000, 0x100 },
 	[X1E_TCSR_SOC]		= { 0x01fc8000, 0x4 },
 	[X1E_TURING_CC]		= { 0x32000000, 0x20000 },
 	[X1E_ACD_MND]		= { 0x32350000, 0x1000 },
@@ -1400,6 +1397,7 @@ static int x1e_map_blocks(struct qcom_adsp *pas)
 	const struct x1e_blk_desc *blks = pas->x1e->is_cdsp ? x1e_cdsp_blks : x1e_adsp_blks;
 	int i;
 
+	pas->x1e_base[X1E_QDSP6SS] = pas->qdsp6ss_base;
 	for (i = 0; i < X1E_NR_BLK; i++) {
 		if (!blks[i].size)
 			continue;
@@ -1630,7 +1628,8 @@ static int x1e_probe(struct qcom_adsp *pas)
 	if (ret)
 		return dev_err_probe(pas->dev, ret, "unable to resolve dtb memory-region\n");
 
-	pas->dtb_mem_phys = pas->dtb_mem_reloc = res.start;
+	pas->dtb_mem_phys = res.start;
+	pas->dtb_mem_reloc = res.start;
 	pas->dtb_mem_size = resource_size(&res);
 	pas->dtb_mem_region = devm_ioremap_resource_wc(pas->dev, &res);
 	if (IS_ERR(pas->dtb_mem_region))
@@ -1829,16 +1828,16 @@ static int adsp_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "Failed to attach proxy power domains\n");
 
+	ret = adsp_init_reset(adsp);
+	if (ret)
+		goto disable_pm;
+
+	ret = adsp_init_mmio(adsp, pdev);
+	if (ret)
+		goto disable_pm;
+
 	if (desc->x1e) {
 		ret = x1e_probe(adsp);
-		if (ret)
-			goto disable_pm;
-	} else {
-		ret = adsp_init_reset(adsp);
-		if (ret)
-			goto disable_pm;
-
-		ret = adsp_init_mmio(adsp, pdev);
 		if (ret)
 			goto disable_pm;
 	}
