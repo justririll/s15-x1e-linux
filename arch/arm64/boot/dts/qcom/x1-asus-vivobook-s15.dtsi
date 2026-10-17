@@ -769,7 +769,10 @@
 		pinctrl-names = "default";
 	};
 
-	/* EC @ 0x76 */
+	embedded-controller@76 {
+		compatible = "asus,vivobook-s15-ec";
+		reg = <0x76>;
+	};
 };
 
 &i2c7 {

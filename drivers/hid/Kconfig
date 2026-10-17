@@ -200,6 +200,20 @@ config HID_ASUS
 	- GL553V series
 	- GL753V series
 
+config HID_ASUS_VIVOBOOK_S15
+	tristate "ASUS Vivobook S15 S5507 keyboard"
+	depends on I2C_HID_CORE
+	depends on LEDS_CLASS
+	help
+	  Support for the Fn hotkeys, keyboard backlight and Fn-lock of the
+	  built-in I2C keyboard of the ASUS Vivobook S15 S5507 (Snapdragon X).
+
+	  Fn+F cycles the fan profile through the Vivobook S15 EC driver
+	  (EC_ASUS_VIVOBOOK_S15) when that is available.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called hid-asus-vivobook-s15.
+
 config HID_AUREAL
 	tristate "Aureal"
 	help

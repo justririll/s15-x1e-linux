@@ -155,4 +155,18 @@ config EC_QCOM_HAMOA
 
 	  This driver currently supports Hamoa/Purwa/Glymur reference devices.
 
+config EC_ASUS_VIVOBOOK_S15
+	tristate "ASUS Vivobook S15 Embedded Controller driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on I2C
+	depends on HWMON
+	depends on THERMAL
+	help
+	  Driver for the Embedded Controller of the Snapdragon X based
+	  ASUS Vivobook S15 (S5507). It reports the SoC temperature to the
+	  EC (required, the EC powers the machine off otherwise) and exposes
+	  fan speed, manual fan control, fan profiles and keyboard RGB.
+
+	  Say M or Y here to include this support.
+
 endif # ARM64_PLATFORM_DEVICES
