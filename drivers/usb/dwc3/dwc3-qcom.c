@@ -524,9 +524,25 @@ static void dwc3_qcom_select_utmi_clk(struct dwc3_qcom *qcom)
 			  PIPE_UTMI_CLK_DIS);
 }
 
+static bool dwc3_qcom_hs_phys_in_l2(struct dwc3_qcom *qcom)
+{
+	bool in_l2 = true;
+	u32 val;
+	int i;
+
+	for (i = 0; i < qcom->num_ports; i++) {
+		val = readl(qcom->qscratch_base + pwr_evnt_irq_stat_reg[i]);
+		if (!(val & PWR_EVNT_LPM_IN_L2_MASK)) {
+			dev_err(qcom->dev, "port-%d HS-PHY not in L2\n", i + 1);
+			in_l2 = false;
+		}
+	}
+
+	return in_l2;
+}
+
 static int dwc3_qcom_suspend(struct dwc3_qcom *qcom, pm_message_t msg)
 {
-	u32 val;
 	int i, ret;
 	bool wakeup;
 
@@ -559,14 +575,8 @@ static int dwc3_qcom_suspend(struct dwc3_qcom *qcom, pm_message_t msg)
 	 * it in L2 across suspend. A peripheral disconnects from the bus and
 	 * powers the PHY off first, so its link never enters L2.
 	 */
-	if (dwc3_qcom_is_host(qcom) && wakeup) {
-		for (i = 0; i < qcom->num_ports; i++) {
-			val = readl(qcom->qscratch_base + pwr_evnt_irq_stat_reg[i]);
-			if (!(val & PWR_EVNT_LPM_IN_L2_MASK))
-				dev_err(qcom->dev, "port-%d HS-PHY not in L2\n",
-					i + 1);
-		}
-	}
+	if (dwc3_qcom_is_host(qcom) && wakeup)
+		dwc3_qcom_hs_phys_in_l2(qcom);
 
 	if (!qcom->fw_managed) {
 		clk_bulk_disable_unprepare(qcom->num_clocks, qcom->clks);
@@ -1155,6 +1165,19 @@ static int dwc3_qcom_runtime_suspend(struct device *dev)
 	ret = dwc3_runtime_suspend(&qcom->dwc);
 	if (ret)
 		return ret;
+
+	/*
+	 * A HS PHY that did not enter L2 has bus activity, such as a device
+	 * being attached. Gating the clocks now would leave that event to the
+	 * wakeup interrupts, which are armed for the old line state, so back
+	 * off and let autosuspend try again later.
+	 */
+	if (!qcom->is_suspended && dwc3_qcom_is_host(qcom) &&
+	    !dwc3_qcom_hs_phys_in_l2(qcom)) {
+		dwc3_runtime_resume(&qcom->dwc);
+		pm_runtime_mark_last_busy(dev);
+		return -EBUSY;
+	}
 
 	return dwc3_qcom_suspend(qcom, PMSG_AUTO_SUSPEND);
 }
