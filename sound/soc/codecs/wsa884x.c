@@ -1663,12 +1663,25 @@ static int wsa884x_codec_probe(struct snd_soc_component *comp)
 	return 0;
 }
 
+/*
+ * Speaker protection setups: run the PA like the vendor driver does, with the
+ * DRE controlling the PA gain up to the full G_21_DB system gain instead of a
+ * fixed CSR gain. This bypasses "PA Volume", so only enable it together with
+ * DSP speaker protection.
+ */
+static bool pa_dre_gain;
+module_param(pa_dre_gain, bool, 0644);
+MODULE_PARM_DESC(pa_dre_gain, "Speaker mode: DRE controlled PA gain up to G_21_DB (needs speaker protection)");
+
 static void wsa884x_spkr_post_pmu(struct snd_soc_component *component,
 				  struct wsa884x_priv *wsa884x)
 {
 	unsigned int curr_limit, curr_ovrd_en;
 
 	wsa884x_set_gain_parameters(wsa884x);
+	if (pa_dre_gain && wsa884x->dev_mode == WSA884X_SPEAKER)
+		snd_soc_component_write(component, WSA884X_DRE_CTL_1,
+					FIELD_PREP(WSA884X_DRE_CTL_1_CSR_GAIN_MASK, G_21_DB));
 	if (wsa884x->dev_mode == WSA884X_RECEIVER) {
 		snd_soc_component_write_field(component, WSA884X_DRE_CTL_0,
 					      WSA884X_DRE_CTL_0_PROG_DELAY_MASK, 0x3);
