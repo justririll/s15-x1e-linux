@@ -69,6 +69,11 @@ struct q6apm {
 	struct idr containers_idr;
 	struct idr control_links_idr;
 	struct idr modules_idr;
+
+	/* debugfs raw module param access (get/set cfg) */
+	struct dentry *debugfs;
+	u8 dbg_rsp[4096];
+	size_t dbg_rsp_len;
 };
 
 struct audio_buffer {

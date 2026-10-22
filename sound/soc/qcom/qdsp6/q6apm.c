@@ -2,6 +2,7 @@
 // Copyright (c) 2020, Linaro Limited
 
 #include <dt-bindings/soc/qcom,gpr.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -919,6 +920,100 @@ static const struct snd_soc_component_driver q6apm_audio_component = {
 	.remove_order   = SND_SOC_COMP_ORDER_LAST,
 };
 
+/*
+ * Debug: raw module parameter access.
+ *   echo "get <iid> <param_id> <size>" > param   then cat param
+ *   echo "set <iid> <param_id> <u32> [<u32>...]" > param
+ * Values are parsed with base 0 (0x.. hex allowed). Response dump is in 32-bit words.
+ */
+static ssize_t q6apm_dbg_param_write(struct file *file, const char __user *ubuf,
+				     size_t count, loff_t *ppos)
+{
+	struct q6apm *apm = file->private_data;
+	char *buf, *p, *tok;
+	u32 v[260];
+	int n = 0, rc, size;
+	bool set;
+
+	buf = memdup_user_nul(ubuf, min_t(size_t, count, 4095));
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	p = strim(buf);
+	tok = strsep(&p, " ");
+	set = tok && !strcmp(tok, "set");
+	if (!tok || (!set && strcmp(tok, "get"))) {
+		kfree(buf);
+		return -EINVAL;
+	}
+	while ((tok = strsep(&p, " ")) && n < ARRAY_SIZE(v)) {
+		if (!*tok)
+			continue;
+		if (kstrtou32(tok, 0, &v[n++])) {
+			kfree(buf);
+			return -EINVAL;
+		}
+	}
+	kfree(buf);
+	if (n < 3)
+		return -EINVAL;
+
+	size = set ? (n - 2) * 4 : v[2];
+	if (size <= 0 || size > sizeof(apm->dbg_rsp) - 64)
+		return -EINVAL;
+
+	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(
+		APM_MODULE_PARAM_DATA_SIZE + ALIGN(size, 8),
+		set ? APM_CMD_SET_CFG : APM_CMD_GET_CFG, 0);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+
+	{
+		struct apm_module_param_data *pd = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+
+		pd->module_instance_id = v[0];
+		pd->param_id = v[1];
+		pd->param_size = size;
+		pd->error_code = 0;
+		if (set)
+			memcpy(pd + 1, &v[2], size);
+	}
+
+	apm->dbg_rsp_len = 0;
+	rc = q6apm_send_cmd_sync(apm, pkt, set ? 0 : APM_CMD_RSP_GET_CFG);
+	if (rc)
+		return rc;
+
+	return count;
+}
+
+static ssize_t q6apm_dbg_param_read(struct file *file, char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	struct q6apm *apm = file->private_data;
+	size_t i, len = 0, sz = 16 * 1024;
+	ssize_t ret;
+	char *out;
+
+	out = kzalloc(sz, GFP_KERNEL);
+	if (!out)
+		return -ENOMEM;
+	for (i = 0; i + 4 <= apm->dbg_rsp_len; i += 4)
+		len += scnprintf(out + len, sz - len, "%08x%c",
+				 *(u32 *)(apm->dbg_rsp + i), (i / 4) % 8 == 7 ? '\n' : ' ');
+	len += scnprintf(out + len, sz - len, "\n");
+	ret = simple_read_from_buffer(ubuf, count, ppos, out, len);
+	kfree(out);
+	return ret;
+}
+
+static const struct file_operations q6apm_dbg_param_fops = {
+	.open = simple_open,
+	.read = q6apm_dbg_param_read,
+	.write = q6apm_dbg_param_write,
+	.llseek = default_llseek,
+};
+
 static int apm_probe(gpr_device_t *gdev)
 {
 	struct device *dev = &gdev->dev;
@@ -949,6 +1044,9 @@ static int apm_probe(gpr_device_t *gdev)
 
 	q6apm_get_apm_state(apm);
 
+	apm->debugfs = debugfs_create_dir("q6apm", NULL);
+	debugfs_create_file("param", 0600, apm->debugfs, apm, &q6apm_dbg_param_fops);
+
 	ret = snd_soc_register_component(dev, &q6apm_audio_component, NULL, 0);
 	if (ret < 0) {
 		dev_err(dev, "failed to register q6apm: %d\n", ret);
@@ -964,6 +1062,9 @@ static int apm_probe(gpr_device_t *gdev)
 
 static void apm_remove(gpr_device_t *gdev)
 {
+	struct q6apm *apm = dev_get_drvdata(&gdev->dev);
+
+	debugfs_remove_recursive(apm->debugfs);
 	g_apm = NULL;
 	of_platform_depopulate(&gdev->dev);
 	snd_soc_unregister_component(&gdev->dev);
@@ -1009,6 +1110,7 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 		case APM_CMD_GRAPH_FLUSH:
 		case APM_CMD_GRAPH_STOP:
 		case APM_CMD_SET_CFG:
+		case APM_CMD_GET_CFG:
 			apm->result.opcode = result->opcode;
 			apm->result.status = result->status;
 			if (result->status)
@@ -1039,6 +1141,14 @@ static int apm_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 		default:
 			break;
 		}
+		break;
+	case APM_CMD_RSP_GET_CFG:
+		/* in-band response: status, then the param data */
+		apm->dbg_rsp_len = min_t(size_t, data->payload_size, sizeof(apm->dbg_rsp));
+		memcpy(apm->dbg_rsp, data->payload, apm->dbg_rsp_len);
+		apm->result.opcode = hdr->opcode;
+		apm->result.status = result->opcode;	/* first word: status */
+		wake_up(&apm->wait);
 		break;
 	case APM_CMD_RSP_SHARED_MEM_MAP_REGIONS:
 		apm->result.opcode = hdr->opcode;
