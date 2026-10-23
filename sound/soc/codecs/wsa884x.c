@@ -1794,9 +1794,12 @@ static int wsa884x_vi_hw_params(struct snd_pcm_substream *substream,
 {
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
 
-	if (!wsa884x->port_enable[WSA884X_PORT_VISENSE])
-		return 0;
-
+	/*
+	 * The VI DAI is only on a link when the board wants V/I feedback, so do
+	 * not depend on "VISENSE Switch": the generic UCM speaker sequence turns
+	 * it off on every speaker enable, which would leave speaker protection
+	 * without feedback.
+	 */
 	wsa884x->vi_port_config = wsa884x_pconfig[WSA884X_PORT_VISENSE];
 	wsa884x->vi_sconfig.frame_rate = params_rate(params);
 	wsa884x->vi_sconfig.ch_count = 2;
