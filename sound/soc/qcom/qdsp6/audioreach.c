@@ -16,6 +16,17 @@
 
 static u32 sp_operation_mode;
 
+/* V/I feedback sampling rate: the vendor graphs use 8 kHz */
+static unsigned int sp_vi_rate = 8000;
+module_param(sp_vi_rate, uint, 0644);
+MODULE_PARM_DESC(sp_vi_rate, "Speaker protection V/I feedback sampling rate (Hz)");
+
+unsigned int audioreach_sp_vi_rate(void)
+{
+	return READ_ONCE(sp_vi_rate);
+}
+EXPORT_SYMBOL_GPL(audioreach_sp_vi_rate);
+
 enum sp_vi_cali_state {
 	SP_VI_CALI_IDLE,	/* Not calibrating */
 	SP_VI_CALI_RUNNING,	/* Events arriving, none decisive yet */
@@ -2183,13 +2194,13 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 	struct audioreach_module_config sp_vi_cfg;
 	int rc;
 
-	/* The VI module and its codec DMA source always run at 8 kHz, S32_LE */
+	/* The VI module and its codec DMA source run at the V/I rate, S32_LE */
 	if (module->module_id == MODULE_ID_SPEAKER_PROTECTION_VI ||
 	    (module->module_id == MODULE_ID_CODEC_DMA_SOURCE &&
 	     audioreach_sg_contains_sp_vi(module->container ?
 					  module->container->sub_graph : NULL))) {
 		sp_vi_cfg = *cfg;
-		sp_vi_cfg.sample_rate = 8000;
+		sp_vi_cfg.sample_rate = READ_ONCE(sp_vi_rate);
 		sp_vi_cfg.bit_width = 32;
 		sp_vi_cfg.bits_per_sample = 32;
 		cfg = &sp_vi_cfg;

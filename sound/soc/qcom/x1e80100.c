@@ -129,7 +129,7 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	return qcom_snd_wcd_jack_setup(rtd, &data->jack, &data->jack_setup);
 }
 
-/* VI codec DAIs on the WSA playback link run at 8 kHz, S32_LE */
+/* VI codec DAIs on the WSA playback link run at the V/I rate (sp_vi_rate), S32_LE */
 static int x1e80100_wsa_vi_params_fixup(struct snd_soc_pcm_runtime *rtd,
 					struct snd_pcm_hw_params *params,
 					int stream)
@@ -142,7 +142,7 @@ static int x1e80100_wsa_vi_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	if (stream != SNDRV_PCM_STREAM_CAPTURE)
 		return 0;
 
-	rate->min = rate->max = 8000;
+	rate->min = rate->max = audioreach_sp_vi_rate();
 	snd_mask_none(fmt);
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S32_LE);
 	return 0;
