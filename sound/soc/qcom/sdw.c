@@ -14,7 +14,7 @@
  */
 static bool sdw_dai_has_dir(struct snd_soc_dai *dai, int dir)
 {
-	return snd_soc_dai_pcm_stream_get_i(dai, dir)->channels_min != 0;
+	return snd_soc_dai_get_pcm_stream(dai, dir)->channels_min != 0;
 }
 
 static bool qcom_snd_is_sdw_dai(int id)
