@@ -26,6 +26,11 @@ struct x1e80100_snd_data {
 	bool jack_setup;
 };
 
+/* Set when the topology provides DSP speaker protection for the WSA speakers */
+static bool speaker_protection;
+module_param(speaker_protection, bool, 0444);
+MODULE_PARM_DESC(speaker_protection, "Speakers are protected by the DSP: do not limit WSA volumes");
+
 /*
  * Register the thermal zones of the link's wsa884x VI DAIs, in DT order,
  * which is the VI channel order.
@@ -88,6 +93,8 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 		x1e80100_register_sp_speakers(rtd);
 		fallthrough;
 	case WSA_CODEC_DMA_RX_1:
+		if (speaker_protection)
+			break;
 		/*
 		 * Set limit of -3 dB on Digital Volume and 0 dB on PA Volume
 		 * to reduce the risk of speaker damage until we have active
