@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -577,6 +578,8 @@ struct hm1092 {
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *exposure;
 	const struct hm1092_mode *mode;
+	/* Optional IR illuminator, lit in torch mode while streaming */
+	struct led_classdev *illuminator;
 	u8 mipi_lanes;
 };
 
@@ -774,6 +777,9 @@ static int hm1092_enable_streams(struct v4l2_subdev *sd,
 			HM1092_STREAM_ON, NULL);
 	if (ret)
 		dev_err(hm1092->dev, "failed to start streaming\n");
+	else if (hm1092->illuminator)
+		led_set_brightness(hm1092->illuminator,
+				   hm1092->illuminator->max_brightness);
 
 out:
 	if (ret)
@@ -788,6 +794,9 @@ static int hm1092_disable_streams(struct v4l2_subdev *sd,
 {
 	struct hm1092 *hm1092 = to_hm1092(sd);
 	int ret;
+
+	if (hm1092->illuminator)
+		led_set_brightness(hm1092->illuminator, LED_OFF);
 
 	ret = cci_write(hm1092->regmap, HM1092_REG_STREAM,
 			HM1092_STREAM_STANDBY, NULL);
@@ -1059,6 +1068,15 @@ static int hm1092_probe(struct i2c_client *client)
 	ret = hm1092_get_pm_resources(hm1092);
 	if (ret)
 		return ret;
+
+	hm1092->illuminator = devm_led_get(hm1092->dev, "illuminator");
+	if (IS_ERR(hm1092->illuminator)) {
+		ret = PTR_ERR(hm1092->illuminator);
+		if (ret != -ENOENT && ret != -ENODATA && ret != -EINVAL)
+			return dev_err_probe(hm1092->dev, ret,
+					     "failed to get IR illuminator\n");
+		hm1092->illuminator = NULL;
+	}
 
 	hm1092->regmap = devm_cci_regmap_init_i2c(client, 16);
 	if (IS_ERR(hm1092->regmap))
