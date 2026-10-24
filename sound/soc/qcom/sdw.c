@@ -85,6 +85,7 @@ static int qcom_snd_sdw_setup_dir(struct snd_soc_pcm_runtime *rtd,
 	if (!sruntime)
 		return -ENOMEM;
 
+	used = false;
 	for_each_rtd_codec_dais(rtd, i, codec_dai) {
 		if (!sdw_dai_has_dir(codec_dai, dir))
 			continue;
@@ -96,6 +97,7 @@ static int qcom_snd_sdw_setup_dir(struct snd_soc_pcm_runtime *rtd,
 		} else if (ret == -ENOTSUPP) {
 			continue;
 		}
+		used = true;
 
 		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
 						  &rx_ch_cnt, rx_ch);
@@ -120,6 +122,10 @@ static int qcom_snd_sdw_setup_dir(struct snd_soc_pcm_runtime *rtd,
 			}
 		}
 	}
+
+	/* No SoundWire codec DAI took the stream (e.g. only a macro DAI): nobody releases it */
+	if (!used)
+		sdw_release_stream(sruntime);
 
 	return 0;
 err:

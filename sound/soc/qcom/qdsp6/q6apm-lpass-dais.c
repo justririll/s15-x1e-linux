@@ -210,7 +210,7 @@ static int q6apm_lpass_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		if (!dai_data->is_port_started[dai->id]) {
+		if (!dai_data->is_port_started[dai->id] && dai_data->graph[dai->id]) {
 			ret = q6apm_graph_start(dai_data->graph[dai->id]);
 			if (ret < 0)
 				dev_err(dai->dev, "Failed to start APM port %d\n", dai->id);
@@ -253,6 +253,10 @@ static int q6apm_lpass_dai_prepare(struct snd_pcm_substream *substream, struct s
 		dai_data->graph[graph_id] = graph;
 	}
 
+	/* A capture DAI without a graph of its own, see q6apm_lpass_dai_startup() */
+	if (!dai_data->graph[dai->id])
+		return 0;
+
 	cfg->direction = substream->stream;
 	rc = q6apm_graph_media_format_pcm(dai_data->graph[dai->id], cfg);
 	if (rc) {
@@ -282,6 +286,17 @@ static int q6apm_lpass_dai_startup(struct snd_pcm_substream *substream, struct s
 
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		graph = q6apm_graph_open(dai->dev, NULL, dai->dev, graph_id, substream->stream);
+		/*
+		 * The topology may put a capture DAI's modules into the graph of
+		 * another DAI (e.g. the speaker protection V/I feedback in the
+		 * speaker playback graph) and only use this DAI as the backend of
+		 * a frontend that taps those modules. There is nothing to run.
+		 */
+		if (PTR_ERR_OR_ZERO(graph) == -ENODEV) {
+			dev_dbg(dai->dev, "DAI %d has no graph of its own\n", graph_id);
+			dai_data->graph[graph_id] = NULL;
+			return 0;
+		}
 		if (IS_ERR(graph)) {
 			dev_err(dai->dev, "Failed to open graph (%d)\n", graph_id);
 			return PTR_ERR(graph);
