@@ -110,6 +110,11 @@ enum qcom_battmgr_variant {
 #define CHARGE_CTRL_START_THR_MAX	95
 #define CHARGE_CTRL_END_THR_MIN		55
 #define CHARGE_CTRL_END_THR_MAX		100
+
+static unsigned int charge_end_threshold;
+module_param(charge_end_threshold, uint, 0444);
+MODULE_PARM_DESC(charge_end_threshold,
+		 "Stop charging at this battery level (55-100 %), applied whenever the battery service comes up; 0 leaves the firmware setting");
 #define CHARGE_CTRL_DELTA_SOC		5
 
 struct qcom_battmgr_enable_request {
@@ -333,6 +338,8 @@ struct qcom_battmgr {
 	struct completion ack;
 
 	bool service_up;
+	/* End threshold to (re)apply on service up, 0 for none */
+	unsigned int charge_end_wanted;
 
 	struct qcom_battmgr_info info;
 	struct qcom_battmgr_status status;
@@ -734,6 +741,7 @@ static int qcom_battmgr_set_charge_end_threshold(struct qcom_battmgr *battmgr, i
 	if (!ret) {
 		battmgr->info.charge_ctrl_start = end_soc - delta_soc;
 		battmgr->info.charge_ctrl_end = end_soc;
+		battmgr->charge_end_wanted = end_soc;
 	}
 
 	return 0;
@@ -1656,6 +1664,13 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
 	if (ret)
 		dev_err(battmgr->dev, "failed to request power notifications\n");
+
+	/* The ADSP forgets the limit when it restarts: set it again */
+	if (battmgr->charge_end_wanted) {
+		qcom_battmgr_set_charge_end_threshold(battmgr, battmgr->charge_end_wanted);
+		dev_info(battmgr->dev, "charge end threshold %u%%\n",
+			 battmgr->info.charge_ctrl_end);
+	}
 }
 
 static void qcom_battmgr_pdr_notify(void *priv, int state)
@@ -1722,6 +1737,11 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	if (ret < 0)
 		return dev_err_probe(dev, ret,
 				     "failed to init battery charge control thresholds\n");
+
+	if (charge_end_threshold)
+		battmgr->charge_end_wanted = clamp(charge_end_threshold,
+						   CHARGE_CTRL_END_THR_MIN,
+						   CHARGE_CTRL_END_THR_MAX);
 
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100) {
