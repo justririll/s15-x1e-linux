@@ -161,11 +161,15 @@ config EC_ASUS_VIVOBOOK_S15
 	depends on I2C
 	depends on HWMON
 	depends on THERMAL
+	depends on INPUT
 	help
 	  Driver for the Embedded Controller of the Snapdragon X based
 	  ASUS Vivobook S15 (S5507). It reports the SoC temperature to the
 	  EC (required, the EC powers the machine off otherwise) and exposes
 	  fan speed, manual fan control, fan profiles and keyboard RGB.
+	  Each fan profile also caps the CPU frequency and sets the GPU
+	  frequency floor, and lid wakeup is suppressed while suspended
+	  with the lid open.
 
 	  Say M or Y here to include this support.
 

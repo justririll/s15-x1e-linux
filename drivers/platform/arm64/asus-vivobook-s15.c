@@ -17,20 +17,36 @@
  * on page 0xC9; this EC firmware NAKs that page, so they are not supported.
  *
  * Derived from the EC firmware (03.00.07) and the Windows DSDT.
+ *
+ * Besides the EC itself the driver applies two machine policies that used
+ * to need userspace helpers:
+ *
+ *  - every fan profile also caps the CPU frequency and decides whether the
+ *    GPU runs at its top frequency (quiet profiles stay quiet under load);
+ *  - the EC pulses the lid switch about five minutes into s2idle even with
+ *    the lid open, so a suspend with the lid open drops the lid wakeup for
+ *    that sleep (power key and keyboard still wake the machine).
  */
 
+#include <linux/cpufreq.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/devm-helpers.h>
 #include <linux/hwmon.h>
 #include <linux/i2c.h>
+#include <linux/input.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/platform_data/asus-vivobook-s15-ec.h>
 #include <linux/pm.h>
+#include <linux/pm_qos.h>
+#include <linux/pm_wakeup.h>
+#include <linux/suspend.h>
 #include <linux/sysfs.h>
 #include <linux/thermal.h>
 #include <linux/workqueue.h>
@@ -146,6 +162,24 @@ module_param(fallback_temp_mc, int, 0644);
 MODULE_PARM_DESC(fallback_temp_mc,
 		 "Temperature (m°C) reported when no thermal zone is readable");
 
+/* whisper, standard, performance, full */
+static unsigned int profile_cpu_max_khz[EC_PROFILE_COUNT] = { 998400, 1440000, 0, 0 };
+module_param_array(profile_cpu_max_khz, uint, NULL, 0644);
+MODULE_PARM_DESC(profile_cpu_max_khz,
+		 "CPU frequency cap (kHz) per fan profile whisper,standard,performance,full; 0 = none");
+
+static bool profile_gpu_max[EC_PROFILE_COUNT] = { false, false, true, true };
+module_param_array(profile_gpu_max, bool, NULL, 0644);
+MODULE_PARM_DESC(profile_gpu_max,
+		 "Hold the GPU at its top frequency, per fan profile whisper,standard,performance,full");
+
+static bool lid_wake_quirk = true;
+module_param(lid_wake_quirk, bool, 0644);
+MODULE_PARM_DESC(lid_wake_quirk,
+		 "Disable lid wakeup while suspended with the lid open (the EC pulses the lid switch)");
+
+#define EC_MAX_POLICIES		8
+
 struct asus_ec {
 	struct device *dev;
 	struct i2c_client *client;	/* 0x76 */
@@ -170,6 +204,19 @@ struct asus_ec {
 	enum ec_rgb_mode rgb_mode;
 	u8 rgb_speed;
 	bool rgb_valid;
+
+	/* Per-profile CPU cap and GPU boost, under limits_lock */
+	struct mutex limits_lock;
+	struct notifier_block cpufreq_nb;
+	struct cpufreq_policy *qos_policy[EC_MAX_POLICIES];
+	struct freq_qos_request cpu_qos[EC_MAX_POLICIES];
+	struct device *gpu;
+	struct dev_pm_qos_request gpu_qos;
+	bool gpu_qos_added;
+
+	/* Lid wakeup quirk */
+	struct notifier_block pm_nb;
+	struct device *lid_wake_dev;	/* wakeup dropped for this sleep */
 };
 
 /* Single EC per machine; lets the keyboard driver reach it for Fn+F */
@@ -361,6 +408,283 @@ static int ec_send_rgb(struct asus_ec *ec)
 }
 
 /* ---------------------------------------------------------------------- */
+/* CPU / GPU limits per fan profile                                       */
+
+static s32 ec_cpu_cap(struct asus_ec *ec)
+{
+	unsigned int khz = profile_cpu_max_khz[ec->profile];
+
+	return khz ? min_t(unsigned int, khz, FREQ_QOS_MAX_DEFAULT_VALUE) :
+		     FREQ_QOS_MAX_DEFAULT_VALUE;
+}
+
+/* Caller holds limits_lock */
+static void ec_apply_limits(struct asus_ec *ec)
+{
+	s32 cap = ec_cpu_cap(ec);
+	bool gpu_max = profile_gpu_max[ec->profile];
+	int i;
+
+	for (i = 0; i < EC_MAX_POLICIES; i++)
+		if (ec->qos_policy[i])
+			freq_qos_update_request(&ec->cpu_qos[i], cap);
+
+	if (ec->gpu_qos_added)
+		dev_pm_qos_update_request(&ec->gpu_qos, gpu_max ? S32_MAX :
+					  PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE);
+
+	dev_dbg(ec->dev, "%s: CPU cap %d kHz, GPU %s\n", ec_profile_names[ec->profile],
+		cap, gpu_max ? "at max" : "on demand");
+}
+
+/* Caller holds limits_lock */
+static void ec_track_policy(struct asus_ec *ec, struct cpufreq_policy *policy)
+{
+	int i, free = -1;
+
+	for (i = 0; i < EC_MAX_POLICIES; i++) {
+		if (ec->qos_policy[i] == policy)
+			return;
+		if (!ec->qos_policy[i] && free < 0)
+			free = i;
+	}
+	if (free < 0) {
+		dev_warn(ec->dev, "too many cpufreq policies, CPU%u not capped\n", policy->cpu);
+		return;
+	}
+	if (freq_qos_add_request(&policy->constraints, &ec->cpu_qos[free],
+				 FREQ_QOS_MAX, ec_cpu_cap(ec)) < 0)
+		return;
+	ec->qos_policy[free] = policy;
+}
+
+/* Caller holds limits_lock */
+static void ec_untrack_policy(struct asus_ec *ec, struct cpufreq_policy *policy)
+{
+	int i;
+
+	for (i = 0; i < EC_MAX_POLICIES; i++) {
+		if (ec->qos_policy[i] != policy)
+			continue;
+		freq_qos_remove_request(&ec->cpu_qos[i]);
+		ec->qos_policy[i] = NULL;
+	}
+}
+
+static int ec_cpufreq_notifier(struct notifier_block *nb, unsigned long event, void *data)
+{
+	struct asus_ec *ec = container_of(nb, struct asus_ec, cpufreq_nb);
+	struct cpufreq_policy *policy = data;
+
+	guard(mutex)(&ec->limits_lock);
+	if (event == CPUFREQ_CREATE_POLICY)
+		ec_track_policy(ec, policy);
+	else if (event == CPUFREQ_REMOVE_POLICY)
+		ec_untrack_policy(ec, policy);
+	return NOTIFY_OK;
+}
+
+static void ec_limits_exit(void *data)
+{
+	struct asus_ec *ec = data;
+	int i;
+
+	cpufreq_unregister_notifier(&ec->cpufreq_nb, CPUFREQ_POLICY_NOTIFIER);
+
+	guard(mutex)(&ec->limits_lock);
+	for (i = 0; i < EC_MAX_POLICIES; i++) {
+		if (!ec->qos_policy[i])
+			continue;
+		freq_qos_remove_request(&ec->cpu_qos[i]);
+		ec->qos_policy[i] = NULL;
+	}
+	if (ec->gpu_qos_added) {
+		dev_pm_qos_remove_request(&ec->gpu_qos);
+		ec->gpu_qos_added = false;
+	}
+	put_device(ec->gpu);
+	ec->gpu = NULL;
+}
+
+static int ec_limits_init(struct asus_ec *ec)
+{
+	struct device_node *np;
+	unsigned int cpu;
+	int ret;
+
+	/* The Adreno GPU: its devfreq honours DEV_PM_QOS_MIN_FREQUENCY */
+	np = of_find_compatible_node(NULL, NULL, "qcom,adreno");
+	if (np) {
+		struct platform_device *pdev = of_find_device_by_node(np);
+
+		of_node_put(np);
+		if (pdev) {
+			ec->gpu = &pdev->dev;
+			if (dev_pm_qos_add_request(ec->gpu, &ec->gpu_qos,
+						   DEV_PM_QOS_MIN_FREQUENCY,
+						   PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE) >= 0)
+				ec->gpu_qos_added = true;
+		}
+	}
+
+	ec->cpufreq_nb.notifier_call = ec_cpufreq_notifier;
+	ret = cpufreq_register_notifier(&ec->cpufreq_nb, CPUFREQ_POLICY_NOTIFIER);
+	if (ret) {
+		put_device(ec->gpu);
+		ec->gpu = NULL;
+		return ret;
+	}
+
+	/* Policies that existed before the notifier */
+	scoped_guard(mutex, &ec->limits_lock) {
+		for_each_possible_cpu(cpu) {
+			struct cpufreq_policy *policy = cpufreq_cpu_get(cpu);
+
+			if (!policy)
+				continue;
+			if (policy->cpu == cpu)
+				ec_track_policy(ec, policy);
+			cpufreq_cpu_put(policy);
+		}
+		ec_apply_limits(ec);
+	}
+
+	return devm_add_action_or_reset(ec->dev, ec_limits_exit, ec);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Lid wakeup quirk                                                       */
+
+static struct input_handle *ec_lid_handle;
+static DEFINE_MUTEX(ec_lid_lock);
+
+static int ec_lid_connect(struct input_handler *handler, struct input_dev *dev,
+			  const struct input_device_id *id)
+{
+	struct input_handle *handle;
+	int ret;
+
+	guard(mutex)(&ec_lid_lock);
+	if (ec_lid_handle)
+		return -EBUSY;
+
+	handle = kzalloc(sizeof(*handle), GFP_KERNEL);
+	if (!handle)
+		return -ENOMEM;
+
+	handle->dev = dev;
+	handle->handler = handler;
+	handle->name = DRIVER_NAME "-lid";
+
+	ret = input_register_handle(handle);
+	if (ret)
+		goto err_free;
+
+	/* Opened so the switch state stays current */
+	ret = input_open_device(handle);
+	if (ret)
+		goto err_unregister;
+
+	ec_lid_handle = handle;
+	return 0;
+
+err_unregister:
+	input_unregister_handle(handle);
+err_free:
+	kfree(handle);
+	return ret;
+}
+
+static void ec_lid_disconnect(struct input_handle *handle)
+{
+	scoped_guard(mutex, &ec_lid_lock) {
+		if (ec_lid_handle == handle)
+			ec_lid_handle = NULL;
+	}
+	input_close_device(handle);
+	input_unregister_handle(handle);
+	kfree(handle);
+}
+
+static const struct input_device_id ec_lid_ids[] = {
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_EVBIT | INPUT_DEVICE_ID_MATCH_SWBIT,
+		.evbit = { BIT_MASK(EV_SW) },
+		.swbit = { [BIT_WORD(SW_LID)] = BIT_MASK(SW_LID) },
+	},
+	{ }
+};
+
+static struct input_handler ec_lid_handler = {
+	.connect	= ec_lid_connect,
+	.disconnect	= ec_lid_disconnect,
+	.name		= DRIVER_NAME "-lid",
+	.id_table	= ec_lid_ids,
+};
+
+static int ec_pm_notifier(struct notifier_block *nb, unsigned long action, void *data)
+{
+	struct asus_ec *ec = container_of(nb, struct asus_ec, pm_nb);
+	struct device *wake_dev;
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE: {
+		if (!lid_wake_quirk)
+			break;
+		guard(mutex)(&ec_lid_lock);
+		if (!ec_lid_handle || test_bit(SW_LID, ec_lid_handle->dev->sw))
+			break;	/* no lid switch, or the lid is closed */
+		wake_dev = ec_lid_handle->dev->dev.parent;
+		if (!wake_dev || !device_may_wakeup(wake_dev))
+			break;
+		device_set_wakeup_enable(wake_dev, false);
+		ec->lid_wake_dev = get_device(wake_dev);
+		dev_dbg(ec->dev, "lid open: lid wakeup off for this sleep\n");
+		break;
+	}
+	case PM_POST_SUSPEND:
+		if (!ec->lid_wake_dev)
+			break;
+		device_set_wakeup_enable(ec->lid_wake_dev, true);
+		put_device(ec->lid_wake_dev);
+		ec->lid_wake_dev = NULL;
+		break;
+	}
+	return NOTIFY_DONE;
+}
+
+static void ec_lid_exit(void *data)
+{
+	struct asus_ec *ec = data;
+
+	unregister_pm_notifier(&ec->pm_nb);
+	if (ec->lid_wake_dev) {
+		device_set_wakeup_enable(ec->lid_wake_dev, true);
+		put_device(ec->lid_wake_dev);
+		ec->lid_wake_dev = NULL;
+	}
+	input_unregister_handler(&ec_lid_handler);
+}
+
+static int ec_lid_init(struct asus_ec *ec)
+{
+	int ret;
+
+	ret = input_register_handler(&ec_lid_handler);
+	if (ret)
+		return ret;
+
+	ec->pm_nb.notifier_call = ec_pm_notifier;
+	ret = register_pm_notifier(&ec->pm_nb);
+	if (ret) {
+		input_unregister_handler(&ec_lid_handler);
+		return ret;
+	}
+
+	return devm_add_action_or_reset(ec->dev, ec_lid_exit, ec);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Fan profile                                                            */
 
 static int ec_set_profile(struct asus_ec *ec, unsigned int profile)
@@ -377,6 +701,8 @@ static int ec_set_profile(struct asus_ec *ec, unsigned int profile)
 		return ret;
 
 	dev_dbg(ec->dev, "fan profile: %s\n", ec_profile_names[profile]);
+	scoped_guard(mutex, &ec->limits_lock)
+		ec_apply_limits(ec);
 	sysfs_notify(&ec->dev->kobj, NULL, "fan_profile");
 	return 0;
 }
@@ -837,6 +1163,10 @@ static int ec_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
+	ret = devm_mutex_init(dev, &ec->limits_lock);
+	if (ret)
+		return ret;
+
 	ret = ec_parse_zones(ec);
 	if (ret)
 		return dev_err_probe(dev, ret, "invalid thermal-zone-names\n");
@@ -866,6 +1196,14 @@ static int ec_probe(struct i2c_client *client)
 	mutex_unlock(&ec->lock);
 	if (ret)
 		dev_warn(dev, "failed to initialise fan control: %d\n", ret);
+
+	ret = ec_limits_init(ec);
+	if (ret)
+		dev_warn(dev, "CPU/GPU limits per fan profile unavailable: %d\n", ret);
+
+	ret = ec_lid_init(ec);
+	if (ret)
+		dev_warn(dev, "lid wakeup quirk unavailable: %d\n", ret);
 
 	hwmon = devm_hwmon_device_register_with_info(dev, "asus_vivobook_ec", ec,
 						     &ec_hwmon_chip, NULL);
