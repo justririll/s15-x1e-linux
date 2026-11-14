@@ -4,8 +4,10 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/thermal.h>
+#include <sound/control.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/jack.h>
@@ -30,6 +32,13 @@ struct x1e80100_snd_data {
 static bool speaker_protection;
 module_param(speaker_protection, bool, 0444);
 MODULE_PARM_DESC(speaker_protection, "Speakers are protected by the DSP: do not limit WSA volumes");
+
+/* Saved speaker calibration, loaded into "Speaker Protection R0T0" at boot */
+static long sp_r0t0[2 * MAX_SP_VI_SPEAKERS];
+static int sp_r0t0_count;
+module_param_array(sp_r0t0, long, &sp_r0t0_count, 0444);
+MODULE_PARM_DESC(sp_r0t0,
+		 "Speaker calibration: R0 (Q24 ohm),T0 (Q6 °C) per speaker, as read back from the \"Speaker Protection R0T0\" control");
 
 /*
  * Register the thermal zones of the link's wsa884x VI DAIs, in DT order,
@@ -244,6 +253,63 @@ static const struct snd_soc_ops x1e80100_be_ops = {
 	.prepare = x1e80100_snd_prepare,
 };
 
+static void x1e80100_set_ctl(struct snd_soc_card *card, const char *name,
+			     const long *vals, unsigned int count)
+{
+	struct snd_kcontrol *kctl = snd_soc_card_get_kcontrol(card, name);
+	struct snd_ctl_elem_value *ev;
+	unsigned int i;
+	int ret;
+
+	if (!kctl) {
+		dev_warn(card->dev, "no control \"%s\"\n", name);
+		return;
+	}
+
+	ev = kzalloc(sizeof(*ev), GFP_KERNEL);
+	if (!ev)
+		return;
+
+	ev->id = kctl->id;
+	for (i = 0; i < count && i < ARRAY_SIZE(ev->value.integer.value); i++)
+		ev->value.integer.value[i] = vals[i];
+
+	ret = kctl->put(kctl, ev);
+	if (ret < 0)
+		dev_warn(card->dev, "failed to set \"%s\": %d\n", name, ret);
+	kfree(ev);
+}
+
+/*
+ * Speaker protection needs the WSA V/I feedback path, which UCM does not
+ * enable, plus the speakers' saved calibration. Set both up before the card
+ * is registered, so no userspace helper has to.
+ */
+static void x1e80100_fixup_controls(struct snd_soc_card *card)
+{
+	static const char * const vi_paths[] = {
+		"WSA WSA_AIF_VI Mixer WSA_SPKR_VI_1",
+		"WSA WSA_AIF_VI Mixer WSA_SPKR_VI_2",
+		"MultiMedia5 Mixer WSA_CODEC_DMA_TX_0",	/* V/I tap */
+	};
+	static const long on = 1;
+	unsigned int i;
+
+	if (!speaker_protection)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(vi_paths); i++)
+		if (snd_soc_card_get_kcontrol(card, vi_paths[i]))
+			x1e80100_set_ctl(card, vi_paths[i], &on, 1);
+
+	if (sp_r0t0_count) {
+		x1e80100_set_ctl(card, "Speaker Protection R0T0", sp_r0t0, sp_r0t0_count);
+		dev_info(card->dev, "speaker calibration (R0/T0) loaded\n");
+	} else {
+		dev_warn(card->dev, "no speaker calibration (sp_r0t0=), the DSP assumes hot coils\n");
+	}
+}
+
 static void x1e80100_add_be_ops(struct snd_soc_card *card)
 {
 	struct snd_soc_dai_link *link;
@@ -291,6 +357,7 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 		return ret;
 
 	card->driver_name = of_device_get_match_data(dev);
+	card->fixup_controls = x1e80100_fixup_controls;
 	x1e80100_add_be_ops(card);
 
 	return devm_snd_soc_register_card(dev, card);
