@@ -2414,6 +2414,22 @@ static int qca_init_regulators(struct qca_power *qca,
 	return 0;
 }
 
+/*
+ * A Bluetooth function on an M.2 Key E card is linked to the UART through an
+ * OF graph. SoC .dtsi files may carry an unconnected port/endpoint on the UART
+ * for boards to fill in; that is not a link, so only a connected endpoint
+ * counts.
+ */
+static bool qca_uart_has_m2_link(struct device *ctrl)
+{
+	struct device_node *remote;
+
+	remote = of_graph_get_remote_node(dev_of_node(ctrl), 0, 0);
+	of_node_put(remote);
+
+	return remote;
+}
+
 static int qca_serdev_probe(struct serdev_device *serdev)
 {
 	struct qca_serdev *qcadev;
@@ -2479,7 +2495,7 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 		 * OF graph link is only present for BT devices attached through
 		 * the M.2 Key E connector.
 		 */
-		if (of_graph_is_present(dev_of_node(&serdev->ctrl->dev))) {
+		if (qca_uart_has_m2_link(&serdev->ctrl->dev)) {
 			qcadev->bt_power->pwrseq = devm_pwrseq_get(&serdev->ctrl->dev,
 								   "uart");
 			if (IS_ERR(qcadev->bt_power->pwrseq))
