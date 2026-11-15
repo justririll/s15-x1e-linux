@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
+// Overlay for qcom/x1e80100-asus-vivobook-s15-el2.dtb (applied by kernel/build.sh)
+// DEBUG (2026-09-29): 2 MiB pstore/ramoops buffer so the kernel log survives a reset
+// during s2idle resume. Read after reboot: /sys/fs/pstore/console-ramoops-0
+/dts-v1/;
+/plugin/;
+/ { compatible = "asus,vivobook-s15"; };
+&{/reserved-memory} {
+  ramoops@c00000000 {
+    compatible = "ramoops";
+    reg = <0xc 0x00000000 0x0 0x200000>;
+    no-map;
+    record-size = <0x20000>;
+    console-size = <0x100000>;
+    pmsg-size = <0x20000>;
+  };
+};

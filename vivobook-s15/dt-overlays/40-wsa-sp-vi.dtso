@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0
+// Overlay for qcom/x1e80100-asus-vivobook-s15-el2.dtb (applied by kernel/build.sh)
+/dts-v1/;
+/plugin/;
+/ { compatible = "asus,vivobook-s15"; };
+/* wsa884x has two DAIs: 0 = SPKR playback, 1 = VI capture */
+&left_spkr { #sound-dai-cells = <1>; };
+&right_spkr { #sound-dai-cells = <1>; };
+/*
+ * VI ports 10/11 carry two channels (V, I). wsa884x VISENSE is a simple data port
+ * without BlockCtrl3, so it always uses per-port block packing: match it on the master.
+ */
+&swr0 {
+  qcom,ports-block-pack-mode = /bits/ 8 <0x00 0x01 0x01 0x00 0x01 0x01 0x00
+                                         0x00 0x00 0x00 0x00 0x00 0x00>;
+};
+/* playback DAIs, then the V/I feedback: wsa884x VI, SoundWire din (Pin9), wsa_macro AIF_VI */
+&{/sound/wsa-dai-link/codec} {
+  sound-dai = <&left_spkr 0>, <&right_spkr 0>, <&swr0 0>, <&lpass_wsamacro 0>,
+              <&left_spkr 1>, <&right_spkr 1>, <&swr0 9>, <&lpass_wsamacro 2>;
+};
+/*
+ * V/I tap (msm/0089): backend for the MultiMedia5 capture of the raw V/I. The V/I modules
+ * are in the speaker playback graph; this link only gives DPCM a backend. Codec: the unused
+ * wsa_macro echo reference DAI (not AIF_VI: stopping the tap would power the V/I path down).
+ */
+&{/sound} {
+  wsa-vi-tap-dai-link {
+    link-name = "WSA VI Tap";
+    cpu { sound-dai = <&q6apmbedai 106>; };    /* WSA_CODEC_DMA_TX_0 */
+    codec { sound-dai = <&lpass_wsamacro 3>; };
+    platform { sound-dai = <&q6apm>; };
+  };
+};

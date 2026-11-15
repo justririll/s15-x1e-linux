@@ -1,0 +1,8 @@
+# systemd-boot entry on the ESP (copy to <ESP>/loader/entries/<distro>-vivobook.conf).
+# Paths are relative to the ESP. The DTB name must stay *-el2.dtb: slbounce (EFI/systemd/drivers)
+# switches to EL2 only for it, and the EL2 DT is what lets Linux start the ADSP/CDSP itself.
+title      <Distro> (Vivobook S15, Linux 7.4.0-rc1)
+linux      /vivobook/vmlinuz-7.4.0-rc1
+initrd     /vivobook/initramfs-7.4.0-rc1.img
+devicetree /vivobook/x1e80100-asus-vivobook-s15-el2.dtb
+options    root=UUID=<root-fs-uuid> rw efi=noruntime id_aa64mmfr0.ecv=1 cma=192M pcie_aspm.policy=powersupersave mem_sleep_default=s2idle console=tty0 msm.psr_enabled=0 nvme.quirks=1344:5413:simple_suspend pcie_port_pm=force fw_devlink.sync_state=timeout systemd.tpm2_wait=0

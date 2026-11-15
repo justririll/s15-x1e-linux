@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0
+// Overlay for qcom/x1e80100-asus-vivobook-s15-el2.dtb (applied by kernel/build.sh)
+// Outbound SMP2P "sleepstate" item to the ADSP: Windows (qcsubsys) writes 0x1000 when the ADSP
+// is up and 0 on Modern Standby entry. Consumer: asus_adsp_sleepstate (modules/adsp-sleepstate).
+/dts-v1/;
+/plugin/;
+/ { compatible = "asus,vivobook-s15"; };
+&{/smp2p-adsp} {
+  sleepstate_smp2p_out: sleepstate-out {
+    qcom,entry-name = "sleepstate";
+    #qcom,smem-state-cells = <1>;
+  };
+};
+&{/} {
+  adsp-sleepstate {
+    compatible = "asus,adsp-sleepstate";
+    qcom,smem-states = <&sleepstate_smp2p_out 0>;
+    qcom,smem-state-names = "sleepstate";
+  };
+};
