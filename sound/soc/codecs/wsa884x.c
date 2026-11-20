@@ -6,6 +6,8 @@
 
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
+#include <linux/delay.h>
+#include <linux/workqueue.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/hwmon.h>
@@ -752,6 +754,17 @@ struct wsa884x_priv {
 	struct mutex sp_lock;
 	unsigned int temperature;
 	bool pa_on;
+	/*
+	 * PA soft start: the PA is switched on at the lowest DRE gain and the
+	 * gain is stepped up to ramp_target, so the turn-on transient is not
+	 * amplified by the full (up to G_21_DB) speaker gain.
+	 */
+	struct mutex ramp_lock;
+	struct delayed_work ramp_work;
+	struct snd_soc_component *ramp_component;
+	unsigned int ramp_gain;
+	unsigned int ramp_target;
+	bool ramping;
 };
 
 enum {
@@ -1851,25 +1864,98 @@ static int wsa884x_hw_free(struct snd_pcm_substream *substream,
 	return 0;
 }
 
+#define WSA884X_RAMP_STEP	2	/* x 1.5 dB per step */
+#define WSA884X_RAMP_START	0	/* -9 dB */
+
+static unsigned int wsa884x_csr_gain(struct snd_soc_component *component)
+{
+	return FIELD_GET(WSA884X_DRE_CTL_1_CSR_GAIN_MASK,
+			 snd_soc_component_read(component, WSA884X_DRE_CTL_1));
+}
+
+static void wsa884x_set_csr_gain(struct snd_soc_component *component,
+				 unsigned int gain)
+{
+	snd_soc_component_write_field(component, WSA884X_DRE_CTL_1,
+				      WSA884X_DRE_CTL_1_CSR_GAIN_MASK, gain);
+}
+
+static void wsa884x_ramp_work(struct work_struct *work)
+{
+	struct wsa884x_priv *wsa884x = container_of(to_delayed_work(work),
+						    struct wsa884x_priv,
+						    ramp_work);
+	struct snd_soc_component *component;
+
+	guard(mutex)(&wsa884x->ramp_lock);
+	if (!wsa884x->ramping)
+		return;
+
+	component = wsa884x->ramp_component;
+
+	wsa884x->ramp_gain = min(wsa884x->ramp_gain + WSA884X_RAMP_STEP,
+				 wsa884x->ramp_target);
+	wsa884x_set_csr_gain(component, wsa884x->ramp_gain);
+	if (wsa884x->ramp_gain < wsa884x->ramp_target)
+		schedule_delayed_work(&wsa884x->ramp_work, msecs_to_jiffies(2));
+	else
+		wsa884x->ramping = false;
+}
+
+static void wsa884x_cancel_ramp(void *data)
+{
+	struct wsa884x_priv *wsa884x = data;
+
+	cancel_delayed_work_sync(&wsa884x->ramp_work);
+}
+
 static int wsa884x_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct snd_soc_component *component = dai->component;
+	struct wsa884x_priv *wsa884x = snd_soc_component_get_drvdata(component);
+
+	guard(mutex)(&wsa884x->ramp_lock);
+	wsa884x->ramp_component = component;
 
 	if (mute) {
-		snd_soc_component_write_field(component, WSA884X_DRE_CTL_1,
-					      WSA884X_DRE_CTL_1_CSR_GAIN_EN_MASK,
-					      0x0);
-		snd_soc_component_write_field(component, WSA884X_PA_FSM_EN,
-					      WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK,
-					      0x0);
+		unsigned int gain;
 
+		/* Step down quickly before the PA goes off, then restore the target */
+		if (wsa884x->ramping)
+			gain = wsa884x->ramp_gain;
+		else
+			gain = wsa884x_csr_gain(component);
+		wsa884x->ramping = false;
+		cancel_delayed_work(&wsa884x->ramp_work);
+		while (gain > WSA884X_RAMP_START) {
+			gain = gain > 4 ? gain - 4 : WSA884X_RAMP_START;
+			wsa884x_set_csr_gain(component, gain);
+			usleep_range(500, 600);
+		}
+		snd_soc_component_write_field(component, WSA884X_DRE_CTL_1,
+					      WSA884X_DRE_CTL_1_CSR_GAIN_EN_MASK,
+					      0x0);
+		snd_soc_component_write_field(component, WSA884X_PA_FSM_EN,
+					      WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK,
+					      0x0);
+		wsa884x_set_csr_gain(component, wsa884x->ramp_target);
 	} else {
+		if (!wsa884x->ramping)
+			wsa884x->ramp_target = wsa884x_csr_gain(component);
+		wsa884x->ramp_gain = WSA884X_RAMP_START;
+		wsa884x_set_csr_gain(component, WSA884X_RAMP_START);
 		snd_soc_component_write_field(component, WSA884X_DRE_CTL_1,
 					      WSA884X_DRE_CTL_1_CSR_GAIN_EN_MASK,
 					      0x1);
 		snd_soc_component_write_field(component, WSA884X_PA_FSM_EN,
 					      WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK,
 					      0x1);
+		wsa884x->ramping = wsa884x->ramp_target > WSA884X_RAMP_START;
+		if (wsa884x->ramping)
+			schedule_delayed_work(&wsa884x->ramp_work,
+					      msecs_to_jiffies(2));
+		else
+			wsa884x_set_csr_gain(component, wsa884x->ramp_target);
 	}
 
 	return 0;
@@ -2168,6 +2254,11 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 		return -ENOMEM;
 
 	mutex_init(&wsa884x->sp_lock);
+	mutex_init(&wsa884x->ramp_lock);
+	INIT_DELAYED_WORK(&wsa884x->ramp_work, wsa884x_ramp_work);
+	ret = devm_add_action_or_reset(dev, wsa884x_cancel_ramp, wsa884x);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < WSA884X_SUPPLIES_NUM; i++)
 		wsa884x->supplies[i].supply = wsa884x_supply_name[i];
