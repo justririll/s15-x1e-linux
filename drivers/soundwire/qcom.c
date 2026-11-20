@@ -1751,6 +1751,16 @@ static int qcom_swrm_get_port_config(struct qcom_swrm_ctrl *ctrl)
 }
 
 #ifdef CONFIG_DEBUG_FS
+static bool qcom_swrm_reg_pops_rd_fifo(struct qcom_swrm_ctrl *ctrl, int reg)
+{
+	if (reg == ctrl->reg_layout[SWRM_REG_CMD_FIFO_RD_FIFO_ADDR])
+		return true;
+	/* v2.0+: the EE0 and EE1 (CPU) blocks each have their own read FIFO */
+	return ctrl->max_reg == SWR_V2_0_MSTR_MAX_REG_ADDR &&
+	       (reg == SWRM_V2_0_CMD_FIFO_RD_FIFO_ADDR ||
+		reg == SWRM_V2_0_CMD_FIFO_RD_FIFO_ADDR - SWRM_V2_REG_EE_STRIDE);
+}
+
 static int swrm_reg_show(struct seq_file *s_file, void *data)
 {
 	struct qcom_swrm_ctrl *ctrl = s_file->private;
@@ -1766,6 +1776,16 @@ static int swrm_reg_show(struct seq_file *s_file, void *data)
 	}
 
 	for (reg = 0; reg <= ctrl->max_reg; reg += 4) {
+		/*
+		 * Reading the command read FIFO pops it: an empty FIFO raises a
+		 * RD_FIFO_UNDERFLOW interrupt, and a pending command response
+		 * would be stolen from the driver. Skip it (and its copies for
+		 * the other execution environments).
+		 */
+		if (qcom_swrm_reg_pops_rd_fifo(ctrl, reg)) {
+			seq_printf(s_file, "0x%.3x: (read FIFO, skipped)\n", reg);
+			continue;
+		}
 		ctrl->reg_read(ctrl, reg, &reg_val);
 		seq_printf(s_file, "0x%.3x: 0x%.2x\n", reg, reg_val);
 	}
