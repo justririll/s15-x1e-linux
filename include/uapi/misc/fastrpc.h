@@ -18,6 +18,11 @@
 #define FASTRPC_IOCTL_MEM_UNMAP		_IOWR('R', 11, struct fastrpc_mem_unmap)
 #define FASTRPC_IOCTL_SET_OPTION	_IOWR('R', 12, struct fastrpc_ioctl_set_option)
 #define FASTRPC_IOCTL_GET_DSP_INFO	_IOWR('R', 13, struct fastrpc_ioctl_capability)
+#define FASTRPC_IOCTL_DSPSIGNAL_CREATE	_IOWR('R', 32, struct fastrpc_ioctl_dspsignal_create)
+#define FASTRPC_IOCTL_DSPSIGNAL_DESTROY	_IOWR('R', 33, struct fastrpc_ioctl_dspsignal_destroy)
+#define FASTRPC_IOCTL_DSPSIGNAL_SIGNAL	_IOWR('R', 34, struct fastrpc_ioctl_dspsignal_signal)
+#define FASTRPC_IOCTL_DSPSIGNAL_WAIT	_IOWR('R', 35, struct fastrpc_ioctl_dspsignal_wait)
+#define FASTRPC_IOCTL_DSPSIGNAL_CANCEL_WAIT _IOWR('R', 36, struct fastrpc_ioctl_dspsignal_cancel_wait)
 
 /**
  * enum fastrpc_map_flags - control flags for mapping memory on DSP user process
@@ -174,6 +179,35 @@ struct fastrpc_ioctl_capability {
 	__u32 attribute_id;
 	__u32 capability;   /* dsp capability */
 	__u32 reserved[4];
+};
+
+/*
+ * dspsignal: lightweight signals between a CPU process and its DSP process,
+ * used by dspqueue. Signal IDs are 0 .. FASTRPC_DSPSIGNAL_NUM_SIGNALS - 1.
+ */
+#define FASTRPC_DSPSIGNAL_NUM_SIGNALS	1024
+#define FASTRPC_DSPSIGNAL_TIMEOUT_NONE	0xffffffff
+
+struct fastrpc_ioctl_dspsignal_create {
+	__u32 signal_id;
+	__u32 flags;	/* must be 0 */
+};
+
+struct fastrpc_ioctl_dspsignal_destroy {
+	__u32 signal_id;
+};
+
+struct fastrpc_ioctl_dspsignal_signal {
+	__u32 signal_id;
+};
+
+struct fastrpc_ioctl_dspsignal_wait {
+	__u32 signal_id;
+	__u32 timeout_usec;	/* FASTRPC_DSPSIGNAL_TIMEOUT_NONE waits forever */
+};
+
+struct fastrpc_ioctl_dspsignal_cancel_wait {
+	__u32 signal_id;
 };
 
 #endif /* __QCOM_FASTRPC_H__ */
