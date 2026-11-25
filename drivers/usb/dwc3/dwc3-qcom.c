@@ -99,6 +99,7 @@ struct dwc3_qcom {
 
 	bool			fw_managed;
 	struct dev_pm_domain_list *pd_list;
+	unsigned int		l2_backoff;
 };
 
 static const struct dwc3_qcom_priv_data sa8255p_dwc3_qcom_priv_data = {
@@ -679,6 +680,7 @@ static int dwc3_qcom_resume(struct dwc3_qcom *qcom, pm_message_t msg)
 	}
 
 	qcom->is_suspended = false;
+	qcom->l2_backoff = 0;
 
 	return 0;
 }
@@ -1174,10 +1176,17 @@ static int dwc3_qcom_runtime_suspend(struct device *dev)
 	 */
 	if (!qcom->is_suspended && dwc3_qcom_is_host(qcom) &&
 	    !dwc3_qcom_hs_phys_in_l2(qcom)) {
-		dwc3_runtime_resume(&qcom->dwc);
-		pm_runtime_mark_last_busy(dev);
-		return -EBUSY;
+		if (++qcom->l2_backoff <= 3) {
+			dwc3_runtime_resume(&qcom->dwc);
+			pm_request_resume(&qcom->dwc.xhci->dev);
+			pm_runtime_mark_last_busy(dev);
+			return -EBUSY;
+		}
+		dev_warn(dev,
+			 "HS-PHY still not in L2 after %u retries; proceeding with runtime suspend\n",
+			 qcom->l2_backoff - 1);
 	}
+	qcom->l2_backoff = 0;
 
 	return dwc3_qcom_suspend(qcom, PMSG_AUTO_SUSPEND);
 }
